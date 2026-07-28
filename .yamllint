@@ -1,0 +1,5 @@
+extends: default
+
+rules:
+  document-start: disable  # 파일 시작 부분의 --- 강제 규칙 끄기
+  truthy: disable          # on, off 등 값 관련 경고 끄기
