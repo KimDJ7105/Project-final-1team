@@ -1,5 +1,4 @@
 # 샘플 설정 파일입니다
----
 app:
   name: "sample-app"
   version: "1.0.0"
