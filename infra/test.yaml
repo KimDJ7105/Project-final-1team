@@ -9,5 +9,5 @@ server:
   environment: "development"
 
 features:
-  - "logging"
-  - "metrics"
+  - "test"
+  - "please"
