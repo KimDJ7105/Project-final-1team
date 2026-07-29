@@ -9,7 +9,8 @@
   3-1. VSC 익스텐션에서 Go (by Go Team at Google)을 설치해주세요
 4. VSC에서 Ctrl + Shift + P를 눌러 명령어 팔레트를 열어주세요
 5. 검색창에 Go: Install/Update Tools를 찾아 클릭합니다.
-  5-1. output 콘솔에 다음과 같이 출력되면 설치가 완료된것 입니다.<br>
+  5-1. 체크박스 목록이 나오면 전체를 선택한 후 OK
+  5-2. output 콘솔에 다음과 같이 출력되면 설치가 완료된것 입니다.<br>
   ```
   [info] Tools environment: GOPATH=C:\Users\rlaeh\go, GOTOOLCHAIN=auto
   [info] Installing 1 tool at C:\Users\rlaeh\go\bin
