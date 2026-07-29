@@ -22,7 +22,7 @@ type UpbitTicker struct {
 }
 
 // ConnectAndListen 함수는 웹소켓 연결을 맺고 지정된 코인들의 시세 데이터를 지속적으로 수신하여 출력합니다.
-func ConnectAndListen(codes []string, done chan struct{}) {
+func ConnectAndListen(codes []string, done chan struct{}, tickerCh chan<- UpbitTicker) {
 	url := "wss://api.upbit.com/websocket/v1"
 
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
@@ -68,6 +68,9 @@ func ConnectAndListen(codes []string, done chan struct{}) {
 
 			fmt.Printf("[%s] 현재가: %.4f KRW | 전일종가: %.4f KRW | 고가: %.4f KRW | 저가: %.4f KRW\n",
 				ticker.Code, ticker.TradePrice, ticker.PrevClosingPrice, ticker.HighPrice, ticker.LowPrice)
+
+			// 파싱 완료된 구조체 데이터를 main.go로 전달하기 위해 채널에 송신합니다.
+			tickerCh <- ticker
 		}
 	}()
 
