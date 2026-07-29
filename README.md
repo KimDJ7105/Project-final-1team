@@ -25,3 +25,4 @@
   go mod init backend
   ```
 7. 환경 설정이 끝났습니다. ```go run main.go``` 를 통해 main.go를 실행합니다.
+8. 의존성은 go.mod와 go.sum 파일에 정보가 기록됩니다. ```go mod download``` 명령어로 필요한 의존성을 모두 다운로드 합니다.
