@@ -47,11 +47,20 @@ func main() {
 	requestPayload := []map[string]interface{}{
 		{"ticket": "truss-test"},
 		{
-			"type":  "ticker",
-			"codes": []string{"KRW-BTC"},
+			"type": "ticker",
+			"codes": []string{"KRW-BTC", // 비트코인
+				"KRW-ETH",  // 이더리움
+				"KRW-XRP",  // 리플
+				"KRW-SOL",  // 솔라나
+				"KRW-DOGE", // 도지코인
+				"KRW-ADA",  // 에이다
+				"KRW-AVAX", // 아발란체
+				"KRW-DOT",  // 폴카닷
+				"KRW-BCH",  // 비트코인 캐시
+				"KRW-LINK", // 체인링크
+			},
 		},
 	}
-
 	// Go 언어의 데이터 구조를 네트워크로 전송할 수 있도록 JSON 바이트 배열로 변환하는 과정입니다.
 	payloadBytes, err := json.Marshal(requestPayload)
 	if err != nil {
