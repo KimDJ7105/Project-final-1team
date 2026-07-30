@@ -112,11 +112,7 @@ const lastPointCoord = (pointsRef) => {
       </div>
 
       <nav class="navigation">
-        <button
-          class="menu-button active"
-          type="button"
-          @click="toggleMenu('overview')"
-        >
+        <button class="menu-button active" type="button" @click="toggleMenu('overview')">
           <span>종합 현황</span>
           <span class="arrow" :class="{ open: openMenu === 'overview' }">›</span>
         </button>
@@ -169,17 +165,10 @@ const lastPointCoord = (pointsRef) => {
       </header>
 
       <section class="metrics-grid">
-        <article
-          v-for="metric in metrics"
-          :key="metric.label"
-          class="metric-card"
-        >
+        <article v-for="metric in metrics" :key="metric.label" class="metric-card">
           <div class="metric-title">
             <span>{{ metric.label }}</span>
-            <span
-              class="metric-dot"
-              :style="{ backgroundColor: metric.color }"
-            ></span>
+            <span class="metric-dot" :style="{ backgroundColor: metric.color }"></span>
           </div>
 
           <strong>{{ metric.value }}</strong>
@@ -227,21 +216,53 @@ const lastPointCoord = (pointsRef) => {
 
               <!-- grid lines (4 dashed horizontal lines) -->
               <g class="grid-lines">
-                <line v-for="i in 4" :key="i" class="grid-line" :x1="0" :x2="100" :y1="(i*20)" :y2="(i*20)" />
+                <line
+                  v-for="i in 4"
+                  :key="i"
+                  class="grid-line"
+                  :x1="0"
+                  :x2="100"
+                  :y1="i * 20"
+                  :y2="i * 20"
+                />
               </g>
 
               <!-- order path and area -->
               <g class="series order-series">
                 <path :d="buildAreaPath(orderPoints)" fill="url(#grad-order)" stroke="none" />
-                <path :d="buildLinePath(orderPoints)" fill="none" stroke="#3478f6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                <circle :cx="lastPointCoord(orderPoints).x" :cy="lastPointCoord(orderPoints).y" r="1.4" fill="#3478f6" />
+                <path
+                  :d="buildLinePath(orderPoints)"
+                  fill="none"
+                  stroke="#3478f6"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+                <circle
+                  :cx="lastPointCoord(orderPoints).x"
+                  :cy="lastPointCoord(orderPoints).y"
+                  r="1.4"
+                  fill="#3478f6"
+                />
               </g>
 
               <!-- exec path and area -->
               <g class="series exec-series">
                 <path :d="buildAreaPath(execPoints)" fill="url(#grad-exec)" stroke="none" />
-                <path :d="buildLinePath(execPoints)" fill="none" stroke="#20c8e8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                <circle :cx="lastPointCoord(execPoints).x" :cy="lastPointCoord(execPoints).y" r="1.4" fill="#20c8e8" />
+                <path
+                  :d="buildLinePath(execPoints)"
+                  fill="none"
+                  stroke="#20c8e8"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+                <circle
+                  :cx="lastPointCoord(execPoints).x"
+                  :cy="lastPointCoord(execPoints).y"
+                  r="1.4"
+                  fill="#20c8e8"
+                />
               </g>
             </svg>
 
@@ -257,11 +278,7 @@ const lastPointCoord = (pointsRef) => {
         <article class="panel status-panel">
           <h3>시스템 구성요소 상태</h3>
 
-          <div
-            v-for="item in systemStatus"
-            :key="item.name"
-            class="status-row"
-          >
+          <div v-for="item in systemStatus" :key="item.name" class="status-row">
             <span>{{ item.name }}</span>
 
             <span class="status-value" :style="{ color: item.color }">
@@ -277,9 +294,7 @@ const lastPointCoord = (pointsRef) => {
 
         <div class="alert-content">
           <strong>KEDA 매칭 엔진 자동 확장 진행 중</strong>
-          <p>
-            Kafka Consumer Lag 기준 초과 · 매칭 엔진 Pod 4개에서 8개로 확장
-          </p>
+          <p>Kafka Consumer Lag 기준 초과 · 매칭 엔진 Pod 4개에서 8개로 확장</p>
         </div>
 
         <span class="scaling-badge">확장 중</span>
@@ -323,7 +338,11 @@ const lastPointCoord = (pointsRef) => {
   background: #07111f;
   color: #f3f7fc;
   font-family:
-    Inter, 'Noto Sans KR', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    Inter,
+    'Noto Sans KR',
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
     sans-serif;
 }
 
@@ -591,7 +610,9 @@ const lastPointCoord = (pointsRef) => {
   background:
     linear-gradient(#20344b 1px, transparent 1px),
     linear-gradient(90deg, #20344b 1px, transparent 1px);
-  background-size: 100% 50px, 25% 100%;
+  background-size:
+    100% 50px,
+    25% 100%;
   border-radius: 10px;
 }
 
@@ -609,11 +630,11 @@ const lastPointCoord = (pointsRef) => {
 }
 
 .throughput-chart .order-series path[stroke] {
-  filter: drop-shadow(0 0 0 rgba(0,0,0,0));
+  filter: drop-shadow(0 0 0 rgba(0, 0, 0, 0));
 }
 
 .throughput-chart .exec-series path[stroke] {
-  filter: drop-shadow(0 0 0 rgba(0,0,0,0));
+  filter: drop-shadow(0 0 0 rgba(0, 0, 0, 0));
 }
 
 .chart-labels {
