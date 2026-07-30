@@ -1,6 +1,5 @@
 <script setup>
 import { ref } from 'vue'
-import DefaultLayout from '../components/DefaultLayout.vue'
 
 const metrics = [
   {
@@ -99,7 +98,7 @@ const lastPointCoord = (pointsRef) => {
 </script>
 
 <template>
-  <DefaultLayout>
+  <div class="dashboard-view">
     <header class="page-header">
       <div>
         <h2>시스템 종합 현황</h2>
@@ -270,7 +269,7 @@ const lastPointCoord = (pointsRef) => {
         </div>
       </div>
     </section>
-  </DefaultLayout>
+  </div>
 </template>
 
 <style scoped>

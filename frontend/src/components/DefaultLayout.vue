@@ -1,11 +1,24 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 
 const router = useRouter()
 const route = useRoute()
 
-const openMenu = ref('overview')
+const openMenu = ref('')
+
+const updateOpenMenu = () => {
+  const p = route.path || ''
+  if (p === '/' || p === '') openMenu.value = 'overview'
+  else if (p.startsWith('/orders') || p.startsWith('/matching-engine')) openMenu.value = 'trading'
+  else openMenu.value = ''
+}
+
+onMounted(() => updateOpenMenu())
+watch(
+  () => route.path,
+  () => updateOpenMenu(),
+)
 
 const toggleMenu = (menu) => {
   openMenu.value = openMenu.value === menu ? '' : menu
@@ -55,7 +68,12 @@ const isActive = (path) => route.path === path
             주문 API 검증
           </button>
 
-          <button class="submenu-item" type="button">
+          <button
+            class="submenu-item"
+            :class="{ selected: isActive('/matching-engine') }"
+            type="button"
+            @click.prevent="go('/matching-engine')"
+          >
             <span class="menu-dot"></span>
             매칭 엔진
           </button>
@@ -89,7 +107,7 @@ const isActive = (path) => route.path === path
     </aside>
 
     <main class="main-content">
-      <slot />
+      <router-view />
     </main>
   </div>
 </template>

@@ -1,6 +1,5 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
-import DefaultLayout from '../components/DefaultLayout.vue'
 
 const markets = ['BTC/KRW', 'ETH/KRW', 'XRP/KRW']
 
@@ -139,7 +138,7 @@ const canCancel = (o) => {
 </script>
 
 <template>
-  <DefaultLayout>
+  <div class="order-management-view">
     <header class="page-header">
       <div>
         <h2>주문 API 검증</h2>
@@ -243,7 +242,7 @@ const canCancel = (o) => {
         <div class="idempotent-card">동일 주문 번호는 같은 응답을 반환합니다 (Idempotent)</div>
       </article>
     </section>
-  </DefaultLayout>
+  </div>
 </template>
 
 <style scoped>
