@@ -26,3 +26,11 @@
   ```
 7. 환경 설정이 끝났습니다. ```go run main.go``` 를 통해 main.go를 실행합니다.
 8. 의존성은 go.mod와 go.sum 파일에 정보가 기록됩니다. ```go mod download``` 명령어로 필요한 의존성을 모두 다운로드 합니다.
+
+
+## 백엔드 실행 방법
+ 필요 의존성 : kafka <br>
+ 1. infra/dev-kafka 디렉터리를 터미널에서 열어줍니다.
+ 2. ```docker-compose up -d```명령어로 kafka를 실행해줍니다.
+ 3. backend 디렉터리를 터미널에서 열어줍니다.
+ 4. ```go run main.go``` 명령어로 백엔드를 실행합니다. 
