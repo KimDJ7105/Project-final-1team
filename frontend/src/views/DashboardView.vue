@@ -1,7 +1,6 @@
 <script setup>
 import { ref } from 'vue'
-
-const openMenu = ref('overview')
+import DefaultLayout from '../components/DefaultLayout.vue'
 
 const metrics = [
   {
@@ -43,10 +42,6 @@ const systemStatus = [
   { name: 'PostgreSQL', status: '정상', color: '#2ed39a' },
   { name: 'Redis 캐시', status: '정상', color: '#2ed39a' },
 ]
-
-const toggleMenu = (menu) => {
-  openMenu.value = openMenu.value === menu ? '' : menu
-}
 
 // Throughput chart data generation (15 minutes, 16 samples)
 const samples = 16
@@ -104,372 +99,181 @@ const lastPointCoord = (pointsRef) => {
 </script>
 
 <template>
-  <div class="app-layout">
-    <aside class="sidebar">
-      <div class="logo-area">
-        <h1>TRUSS</h1>
-        <p>K8s Trading Lab</p>
+  <DefaultLayout>
+    <header class="page-header">
+      <div>
+        <h2>시스템 종합 현황</h2>
+        <p>실시간 주문 처리 상태와 Kubernetes 자동 확장 현황</p>
       </div>
 
-      <nav class="navigation">
-        <button class="menu-button active" type="button" @click="toggleMenu('overview')">
-          <span>종합 현황</span>
-          <span class="arrow" :class="{ open: openMenu === 'overview' }">›</span>
-        </button>
+      <div class="live-badge">
+        <span class="live-dot"></span>
+        실시간
+      </div>
+    </header>
 
-        <div v-if="openMenu === 'overview'" class="submenu">
-          <button class="submenu-item selected" type="button">
-            <span class="menu-dot"></span>
-            시스템 종합 현황
-          </button>
+    <section class="metrics-grid">
+      <article v-for="metric in metrics" :key="metric.label" class="metric-card">
+        <div class="metric-title">
+          <span>{{ metric.label }}</span>
+          <span class="metric-dot" :style="{ backgroundColor: metric.color }"></span>
         </div>
 
-        <button class="menu-button" type="button">
-          <span>거래 처리</span>
-          <span class="arrow">›</span>
-        </button>
+        <strong>{{ metric.value }}</strong>
 
-        <button class="menu-button" type="button">
-          <span>부하 테스트</span>
-          <span class="arrow">›</span>
-        </button>
+        <p :style="{ color: metric.color }">
+          {{ metric.description }}
+        </p>
+      </article>
+    </section>
 
-        <button class="menu-button" type="button">
-          <span>관찰·검증</span>
-          <span class="arrow">›</span>
-        </button>
+    <section class="dashboard-grid">
+      <article class="panel throughput-panel">
+        <div class="panel-header">
+          <div>
+            <h3>주문·체결 처리량</h3>
+            <p>최근 15분 동안 초당 처리 건수</p>
+          </div>
 
-        <button class="menu-button" type="button">
-          <span>데이터·운영</span>
-          <span class="arrow">›</span>
-        </button>
-      </nav>
+          <div class="chart-legend">
+            <span><i class="order-color"></i>주문</span>
+            <span><i class="execution-color"></i>체결</span>
+          </div>
+        </div>
 
-      <div class="system-badge">
-        <span class="status-dot"></span>
-        시스템 정상
+        <div class="chart-placeholder">
+          <svg
+            class="throughput-chart"
+            viewBox="0 0 100 100"
+            preserveAspectRatio="none"
+            xmlns="http://www.w3.org/2000/svg"
+            role="img"
+            aria-label="주문·체결 처리량 그래프"
+          >
+            <defs>
+              <linearGradient id="grad-order" x1="0" x2="0" y1="0" y2="1">
+                <stop offset="0%" stop-color="#3478f6" stop-opacity="0.25" />
+                <stop offset="100%" stop-color="#3478f6" stop-opacity="0" />
+              </linearGradient>
+
+              <linearGradient id="grad-exec" x1="0" x2="0" y1="0" y2="1">
+                <stop offset="0%" stop-color="#20c8e8" stop-opacity="0.25" />
+                <stop offset="100%" stop-color="#20c8e8" stop-opacity="0" />
+              </linearGradient>
+            </defs>
+
+            <!-- grid lines (4 dashed horizontal lines) -->
+            <g class="grid-lines">
+              <line
+                v-for="i in 4"
+                :key="i"
+                class="grid-line"
+                :x1="0"
+                :x2="100"
+                :y1="i * 20"
+                :y2="i * 20"
+              />
+            </g>
+
+            <!-- order path and area -->
+            <g class="series order-series">
+              <path :d="buildAreaPath(orderPoints)" fill="url(#grad-order)" stroke="none" />
+              <path
+                :d="buildLinePath(orderPoints)"
+                fill="none"
+                stroke="#3478f6"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <circle
+                :cx="lastPointCoord(orderPoints).x"
+                :cy="lastPointCoord(orderPoints).y"
+                r="1.4"
+                fill="#3478f6"
+              />
+            </g>
+
+            <!-- exec path and area -->
+            <g class="series exec-series">
+              <path :d="buildAreaPath(execPoints)" fill="url(#grad-exec)" stroke="none" />
+              <path
+                :d="buildLinePath(execPoints)"
+                fill="none"
+                stroke="#20c8e8"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <circle
+                :cx="lastPointCoord(execPoints).x"
+                :cy="lastPointCoord(execPoints).y"
+                r="1.4"
+                fill="#20c8e8"
+              />
+            </g>
+          </svg>
+
+          <div class="chart-labels">
+            <span>15분 전</span>
+            <span>10분 전</span>
+            <span>5분 전</span>
+            <span>현재</span>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel status-panel">
+        <h3>시스템 구성요소 상태</h3>
+
+        <div v-for="item in systemStatus" :key="item.name" class="status-row">
+          <span>{{ item.name }}</span>
+
+          <span class="status-value" :style="{ color: item.color }">
+            <i :style="{ backgroundColor: item.color }"></i>
+            {{ item.status }}
+          </span>
+        </div>
+      </article>
+    </section>
+
+    <section class="scaling-alert">
+      <div class="alert-icon">↗</div>
+
+      <div class="alert-content">
+        <strong>KEDA 매칭 엔진 자동 확장 진행 중</strong>
+        <p>Kafka Consumer Lag 기준 초과 · 매칭 엔진 Pod 4개에서 8개로 확장</p>
       </div>
-    </aside>
 
-    <main class="main-content">
-      <header class="page-header">
+      <span class="scaling-badge">확장 중</span>
+    </section>
+
+    <section class="integrity-panel">
+      <h3>데이터 정합성 검사</h3>
+
+      <div class="integrity-grid">
         <div>
-          <h2>시스템 종합 현황</h2>
-          <p>실시간 주문 처리 상태와 Kubernetes 자동 확장 현황</p>
+          <span>순서 역전</span>
+          <strong>0</strong>
         </div>
-
-        <div class="live-badge">
-          <span class="live-dot"></span>
-          실시간
+        <div>
+          <span>주문 유실</span>
+          <strong>0</strong>
         </div>
-      </header>
-
-      <section class="metrics-grid">
-        <article v-for="metric in metrics" :key="metric.label" class="metric-card">
-          <div class="metric-title">
-            <span>{{ metric.label }}</span>
-            <span class="metric-dot" :style="{ backgroundColor: metric.color }"></span>
-          </div>
-
-          <strong>{{ metric.value }}</strong>
-
-          <p :style="{ color: metric.color }">
-            {{ metric.description }}
-          </p>
-        </article>
-      </section>
-
-      <section class="dashboard-grid">
-        <article class="panel throughput-panel">
-          <div class="panel-header">
-            <div>
-              <h3>주문·체결 처리량</h3>
-              <p>최근 15분 동안 초당 처리 건수</p>
-            </div>
-
-            <div class="chart-legend">
-              <span><i class="order-color"></i>주문</span>
-              <span><i class="execution-color"></i>체결</span>
-            </div>
-          </div>
-
-          <div class="chart-placeholder">
-            <svg
-              class="throughput-chart"
-              viewBox="0 0 100 100"
-              preserveAspectRatio="none"
-              xmlns="http://www.w3.org/2000/svg"
-              role="img"
-              aria-label="주문·체결 처리량 그래프"
-            >
-              <defs>
-                <linearGradient id="grad-order" x1="0" x2="0" y1="0" y2="1">
-                  <stop offset="0%" stop-color="#3478f6" stop-opacity="0.25" />
-                  <stop offset="100%" stop-color="#3478f6" stop-opacity="0" />
-                </linearGradient>
-
-                <linearGradient id="grad-exec" x1="0" x2="0" y1="0" y2="1">
-                  <stop offset="0%" stop-color="#20c8e8" stop-opacity="0.25" />
-                  <stop offset="100%" stop-color="#20c8e8" stop-opacity="0" />
-                </linearGradient>
-              </defs>
-
-              <!-- grid lines (4 dashed horizontal lines) -->
-              <g class="grid-lines">
-                <line
-                  v-for="i in 4"
-                  :key="i"
-                  class="grid-line"
-                  :x1="0"
-                  :x2="100"
-                  :y1="i * 20"
-                  :y2="i * 20"
-                />
-              </g>
-
-              <!-- order path and area -->
-              <g class="series order-series">
-                <path :d="buildAreaPath(orderPoints)" fill="url(#grad-order)" stroke="none" />
-                <path
-                  :d="buildLinePath(orderPoints)"
-                  fill="none"
-                  stroke="#3478f6"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-                <circle
-                  :cx="lastPointCoord(orderPoints).x"
-                  :cy="lastPointCoord(orderPoints).y"
-                  r="1.4"
-                  fill="#3478f6"
-                />
-              </g>
-
-              <!-- exec path and area -->
-              <g class="series exec-series">
-                <path :d="buildAreaPath(execPoints)" fill="url(#grad-exec)" stroke="none" />
-                <path
-                  :d="buildLinePath(execPoints)"
-                  fill="none"
-                  stroke="#20c8e8"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-                <circle
-                  :cx="lastPointCoord(execPoints).x"
-                  :cy="lastPointCoord(execPoints).y"
-                  r="1.4"
-                  fill="#20c8e8"
-                />
-              </g>
-            </svg>
-
-            <div class="chart-labels">
-              <span>15분 전</span>
-              <span>10분 전</span>
-              <span>5분 전</span>
-              <span>현재</span>
-            </div>
-          </div>
-        </article>
-
-        <article class="panel status-panel">
-          <h3>시스템 구성요소 상태</h3>
-
-          <div v-for="item in systemStatus" :key="item.name" class="status-row">
-            <span>{{ item.name }}</span>
-
-            <span class="status-value" :style="{ color: item.color }">
-              <i :style="{ backgroundColor: item.color }"></i>
-              {{ item.status }}
-            </span>
-          </div>
-        </article>
-      </section>
-
-      <section class="scaling-alert">
-        <div class="alert-icon">↗</div>
-
-        <div class="alert-content">
-          <strong>KEDA 매칭 엔진 자동 확장 진행 중</strong>
-          <p>Kafka Consumer Lag 기준 초과 · 매칭 엔진 Pod 4개에서 8개로 확장</p>
+        <div>
+          <span>중복 체결</span>
+          <strong>0</strong>
         </div>
-
-        <span class="scaling-badge">확장 중</span>
-      </section>
-
-      <section class="integrity-panel">
-        <h3>데이터 정합성 검사</h3>
-
-        <div class="integrity-grid">
-          <div>
-            <span>순서 역전</span>
-            <strong>0</strong>
-          </div>
-          <div>
-            <span>주문 유실</span>
-            <strong>0</strong>
-          </div>
-          <div>
-            <span>중복 체결</span>
-            <strong>0</strong>
-          </div>
-          <div>
-            <span>매수·매도 총량 불일치</span>
-            <strong>0</strong>
-          </div>
+        <div>
+          <span>매수·매도 총량 불일치</span>
+          <strong>0</strong>
         </div>
-      </section>
-    </main>
-  </div>
+      </div>
+    </section>
+  </DefaultLayout>
 </template>
 
 <style scoped>
-:global(*) {
-  box-sizing: border-box;
-}
-
-:global(body) {
-  margin: 0;
-  min-width: 1200px;
-  min-height: 100vh;
-  background: #07111f;
-  color: #f3f7fc;
-  font-family:
-    Inter,
-    'Noto Sans KR',
-    -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI',
-    sans-serif;
-}
-
-:global(button) {
-  font: inherit;
-}
-
-.app-layout {
-  display: flex;
-  min-height: 100vh;
-  background: #07111f;
-}
-
-.sidebar {
-  position: fixed;
-  inset: 0 auto 0 0;
-  display: flex;
-  width: 230px;
-  padding: 30px 20px 24px;
-  flex-direction: column;
-  background: #091625;
-  border-right: 1px solid #172a3e;
-}
-
-.logo-area {
-  padding: 0 8px 28px;
-}
-
-.logo-area h1 {
-  margin: 0;
-  font-size: 25px;
-  letter-spacing: 1px;
-}
-
-.logo-area p {
-  margin: 5px 0 0;
-  color: #20c8e8;
-  font-size: 12px;
-}
-
-.navigation {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.menu-button {
-  display: flex;
-  width: 100%;
-  padding: 12px;
-  align-items: center;
-  justify-content: space-between;
-  color: #8ea2b8;
-  background: transparent;
-  border: 0;
-  border-radius: 10px;
-  cursor: pointer;
-}
-
-.menu-button:hover,
-.menu-button.active {
-  color: #f3f7fc;
-  background: #0d1b2a;
-}
-
-.arrow {
-  font-size: 20px;
-  transition: transform 0.2s ease;
-}
-
-.arrow.open {
-  color: #3478f6;
-  transform: rotate(90deg);
-}
-
-.submenu {
-  padding: 0 0 5px 8px;
-}
-
-.submenu-item {
-  display: flex;
-  width: 100%;
-  padding: 11px 12px;
-  align-items: center;
-  gap: 10px;
-  color: #f3f7fc;
-  background: #11243a;
-  border: 0;
-  border-radius: 9px;
-  cursor: pointer;
-}
-
-.menu-dot {
-  width: 8px;
-  height: 8px;
-  background: #3478f6;
-  border-radius: 50%;
-}
-
-.system-badge {
-  display: flex;
-  margin-top: auto;
-  padding: 10px 13px;
-  align-items: center;
-  gap: 8px;
-  color: #2ed39a;
-  background: #11243a;
-  border-radius: 20px;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.status-dot,
-.live-dot {
-  width: 8px;
-  height: 8px;
-  background: #2ed39a;
-  border-radius: 50%;
-}
-
-.main-content {
-  width: calc(100% - 230px);
-  max-width: 1500px;
-  margin-left: 230px;
-  padding: 32px;
-}
-
 .page-header {
   display: flex;
   margin-bottom: 24px;
@@ -509,18 +313,6 @@ const lastPointCoord = (pointsRef) => {
   gap: 14px;
 }
 
-.metric-card,
-.panel,
-.integrity-panel {
-  background: #0d1b2a;
-  border: 1px solid #172a3e;
-  border-radius: 15px;
-}
-
-.metric-card {
-  padding: 18px;
-}
-
 .metric-title {
   display: flex;
   align-items: center;
@@ -553,10 +345,6 @@ const lastPointCoord = (pointsRef) => {
   grid-template-columns: minmax(600px, 2fr) minmax(320px, 1fr);
   gap: 16px;
   margin-top: 18px;
-}
-
-.panel {
-  padding: 20px;
 }
 
 .panel h3,
@@ -616,7 +404,6 @@ const lastPointCoord = (pointsRef) => {
   border-radius: 10px;
 }
 
-/* New SVG throughput chart styles */
 .throughput-chart {
   width: 100%;
   height: 100%;
