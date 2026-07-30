@@ -1,69 +1,81 @@
 package main
 
 import (
-	"context"
 	"fmt"
-	"os"
-	"os/signal"
-	"syscall"
+	"log"
+	"time"
 
-	"backend/kafka"
 	"backend/upbit"
-
-	// 환경 변수용
-	"github.com/joho/godotenv"
 )
 
 func main() {
-	// .env 파일 로드. (에러가 나도 로컬 기본값 등으로 방어 가능)
-	_ = godotenv.Load()
+	market := "KRW-BTC"
+	start := time.Date(2026, 7, 29, 0, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
 
-	// 환경 변수를 통한 카프카 브로커 주소 설정
-	broker := os.Getenv("KAFKA_BROKER")
-	if broker == "" {
-		broker = "localhost:9092"
+	fmt.Printf("=== %s / %s ~ %s (UTC) 과거 데이터 조회 ===\n\n",
+		market, start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05"))
+
+	// 1) 개별 체결 내역 (시각/가격/수량/매수·매도 방향)
+	fmt.Println("--- 개별 체결 내역 (tick) ---")
+	ticks, err := upbit.FetchTradeTicksForDate(market, start)
+	if err != nil {
+		log.Fatalf("체결 내역 조회 실패: %v", err)
 	}
-
-	// 카프카 프로듀서 초기화
-	kafkaProducer := kafka.NewProducer(broker, "upbit-ticker")
-	defer kafkaProducer.Close()
-
-	// TRUSS 시스템의 목표치인 20개 마켓 설정
-	codes := []string{
-		"KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE",
-		"KRW-ADA", "KRW-AVAX", "KRW-DOT", "KRW-BCH", "KRW-LINK",
-		"KRW-SHIB", "KRW-ETC", "KRW-SUI", "KRW-SEI", "KRW-APT",
-		"KRW-STX", "KRW-NEAR", "KRW-AAVE", "KRW-SAND", "KRW-MANA",
+	for _, t := range ticks {
+		fmt.Printf("[%s %s UTC] %s 체결가: %.0f KRW | 체결량: %.8f\n",
+			t.TradeDateUTC, t.TradeTimeUTC, t.AskBid, t.TradePrice, t.TradeVolume)
 	}
+	fmt.Printf("총 %d건의 체결 내역\n\n", len(ticks))
 
-	// 프로그램 종료 신호를 처리할 채널 설정
-	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
+	// 2) 초봉 (1초 단위 캔들)
+	fmt.Println("--- 초봉 (1초) ---")
+	seconds, err := upbit.FetchCandlesInRange("seconds", market, start, end)
+	if err != nil {
+		log.Fatalf("초봉 조회 실패: %v", err)
+	}
+	printCandles(seconds)
+	fmt.Printf("총 %d개의 초봉\n\n", len(seconds))
 
-	// 웹소켓 패키지에 종료를 알리기 위한 채널 생성
-	done := make(chan struct{})
+	// 3) 분봉 (1분 단위 캔들)
+	fmt.Println("--- 분봉 (1분) ---")
+	minutes, err := upbit.FetchCandlesInRange("minutes/1", market, start, end)
+	if err != nil {
+		log.Fatalf("분봉 조회 실패: %v", err)
+	}
+	printCandles(minutes)
+	fmt.Printf("총 %d개의 분봉\n\n", len(minutes))
 
-	// 패키지 간 데이터 전달을 위한 버퍼 채널 생성
-	tickerCh := make(chan upbit.UpbitTicker, 100)
+	// 4) 일봉
+	fmt.Println("--- 일봉 ---")
+	days, err := upbit.FetchRecentCandles("days", market, end, 1)
+	if err != nil {
+		log.Fatalf("일봉 조회 실패: %v", err)
+	}
+	printCandles(days)
+	fmt.Println()
 
-	// 웹소켓 연결 및 수신 로직을 백그라운드(고루틴)에서 실행
-	go upbit.ConnectAndListen(codes, done, tickerCh)
+	// 5) 주봉
+	fmt.Println("--- 주봉 ---")
+	weeks, err := upbit.FetchRecentCandles("weeks", market, end, 1)
+	if err != nil {
+		log.Fatalf("주봉 조회 실패: %v", err)
+	}
+	printCandles(weeks)
+	fmt.Println()
 
-	// 채널로 수신된 데이터를 카프카로 전송하는 독립된 고루틴
-	go func() {
-		for ticker := range tickerCh {
-			err := kafkaProducer.SendMessage(context.Background(), ticker.Code, ticker)
-			if err != nil {
-				fmt.Printf("카프카 전송 실패 (%s): %v\n", ticker.Code, err)
-			}
-		}
-	}()
+	// 6) 월봉
+	fmt.Println("--- 월봉 ---")
+	months, err := upbit.FetchRecentCandles("months", market, end, 1)
+	if err != nil {
+		log.Fatalf("월봉 조회 실패: %v", err)
+	}
+	printCandles(months)
+}
 
-	// 사용자의 종료 신호(Ctrl+C 등)가 들어올 때까지 대기
-	<-interrupt
-	fmt.Println("\n종료 신호를 감지했습니다. 프로그램을 종료합니다.")
-
-	// 웹소켓 로직에 종료 신호 전달
-	close(done)
-	close(tickerCh)
+func printCandles(candles []upbit.Candle) {
+	for _, c := range candles {
+		fmt.Printf("[%s UTC] 시가: %.0f | 고가: %.0f | 저가: %.0f | 종가: %.0f | 거래량: %.8f\n",
+			c.CandleDateTimeUTC, c.OpeningPrice, c.HighPrice, c.LowPrice, c.TradePrice, c.CandleAccTradeVolume)
+	}
 }
