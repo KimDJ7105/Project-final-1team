@@ -10,6 +10,7 @@ const openMenu = ref('')
 const updateOpenMenu = () => {
   const p = route.path || ''
   if (p === '/' || p === '') openMenu.value = 'overview'
+  else if (p.startsWith('/load-test')) openMenu.value = 'loadtest'
   else if (
     p.startsWith('/orders') ||
     p.startsWith('/matching-engine') ||
@@ -94,10 +95,30 @@ const isActive = (path) => route.path === path
           </button>
         </div>
 
-        <button class="menu-button" type="button">
+        <button class="menu-button" type="button" @click="toggleMenu('loadtest')">
           <span>부하 테스트</span>
-          <span class="arrow">›</span>
+          <span class="arrow" :class="{ open: openMenu === 'loadtest' }">›</span>
         </button>
+
+        <div v-if="openMenu === 'loadtest'" class="submenu">
+          <button
+            class="submenu-item"
+            :class="{
+              selected: isActive('/load-test/replay'),
+              'loadtest-selected': isActive('/load-test/replay'),
+            }"
+            type="button"
+            @click.prevent="go('/load-test/replay')"
+          >
+            <span class="menu-dot"></span>
+            주문 재생
+          </button>
+
+          <button class="submenu-item" type="button">
+            <span class="menu-dot" style="background: #556172"></span>
+            AI 트레이더
+          </button>
+        </div>
 
         <button class="menu-button" type="button">
           <span>관찰·검증</span>
@@ -234,6 +255,14 @@ button {
 
 .submenu-item.selected {
   background: #0d1b2a;
+}
+
+.submenu-item.loadtest-selected {
+  background: #0b2f54;
+}
+
+.submenu-item.loadtest-selected .menu-dot {
+  background: #3478f6;
 }
 
 .menu-dot {
