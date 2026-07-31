@@ -220,3 +220,4 @@ yarn-error.log
 # End of https://www.toptal.com/developers/gitignore/api/windows,java,c++,visualstudiocode,intellij
 
 .env
+backend/data/
