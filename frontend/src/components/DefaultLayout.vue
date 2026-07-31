@@ -114,8 +114,16 @@ const isActive = (path) => route.path === path
             주문 재생
           </button>
 
-          <button class="submenu-item" type="button">
-            <span class="menu-dot" style="background: #556172"></span>
+          <button
+            class="submenu-item"
+            :class="{ selected: isActive('/load-test/ai-trader') }"
+            type="button"
+            @click.prevent="go('/load-test/ai-trader')"
+          >
+            <span
+              class="menu-dot"
+              :style="{ background: isActive('/load-test/ai-trader') ? '#3478f6' : '#556172' }"
+            ></span>
             AI 트레이더
           </button>
         </div>

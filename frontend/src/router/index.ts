@@ -5,6 +5,7 @@ import OrderManagementView from '../views/OrderManagementView.vue'
 import MatchingEngineView from '../views/MatchingEngineView.vue'
 import MarketOrderBookView from '../views/MarketOrderBookView.vue'
 import LoadTestReplayView from '../views/LoadTestReplayView.vue'
+import AITraderView from '../views/AITraderView.vue'
 
 const routes = [
   {
@@ -16,6 +17,7 @@ const routes = [
       { path: 'matching-engine', name: 'matching-engine', component: MatchingEngineView },
       { path: 'market-orderbook', name: 'market-orderbook', component: MarketOrderBookView },
       { path: 'load-test/replay', name: 'load-test-replay', component: LoadTestReplayView },
+      { path: 'load-test/ai-trader', name: 'ai-trader', component: AITraderView },
     ],
   },
 ]
