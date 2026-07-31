@@ -71,6 +71,15 @@ func main() {
 		log.Fatalf("월봉 조회 실패: %v", err)
 	}
 	printCandles(months)
+	fmt.Println()
+
+	// 7) 연봉
+	fmt.Println("--- 연봉 ---")
+	years, err := upbit.FetchRecentCandles("years", market, end, 1)
+	if err != nil {
+		log.Fatalf("연봉 조회 실패: %v", err)
+	}
+	printCandles(years)
 }
 
 func printCandles(candles []upbit.Candle) {
