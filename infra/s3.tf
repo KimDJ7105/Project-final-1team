@@ -8,6 +8,10 @@ resource "aws_s3_bucket" "market_data" {
     Team = "team1"
     Name = "team1-truss-market-data"
   }
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "market_data" {

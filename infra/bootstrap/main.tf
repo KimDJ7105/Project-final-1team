@@ -8,9 +8,14 @@ terraform {
     }
   }
 
-  # 이 state 버킷 자체는 아직 존재하지 않으므로, 부트스트랩 단계는
-  # 로컬 state로 1회성으로만 적용합니다. 본 인프라(../)는 여기서 만든
-  # 버킷을 S3 backend로 사용합니다.
+  # 처음 apply할 때는 이 버킷 자체가 존재하지 않아 로컬 state로 1회성 적용했지만,
+  # 버킷 생성 후에는 이 state도 같은 버킷(다른 key)에 올려서 로컬 파일에 의존하지
+  # 않게 합니다 (로컬 state 파일은 유실되기 쉬움 — 실제로 한 번 유실된 적 있음).
+  backend "s3" {
+    bucket = "team1-terraform-state-s3"
+    key    = "bootstrap/terraform.tfstate"
+    region = "ap-northeast-2"
+  }
 }
 
 provider "aws" {
@@ -23,6 +28,10 @@ resource "aws_s3_bucket" "terraform_state" {
   tags = {
     Team = "team1"
     Name = "team1-terraform-state-s3"
+  }
+
+  lifecycle {
+    prevent_destroy = true
   }
 }
 
