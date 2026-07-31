@@ -57,7 +57,7 @@ func FetchTradeTicksForDate(market string, date time.Time) ([]TradeTick, error) 
 		}
 		req.URL.RawQuery = q.Encode()
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := doRequest(req)
 		if err != nil {
 			return nil, err
 		}
@@ -97,7 +97,6 @@ func FetchTradeTicksForDate(market string, date time.Time) ([]TradeTick, error) 
 		}
 
 		cursor = fmt.Sprintf("%d", page[len(page)-1].SequentialID)
-		time.Sleep(110 * time.Millisecond) // 업비트 초당 요청 제한(10회) 대응
 	}
 
 	return result, nil
