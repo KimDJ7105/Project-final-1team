@@ -10,7 +10,12 @@ const openMenu = ref('')
 const updateOpenMenu = () => {
   const p = route.path || ''
   if (p === '/' || p === '') openMenu.value = 'overview'
-  else if (p.startsWith('/orders') || p.startsWith('/matching-engine')) openMenu.value = 'trading'
+  else if (
+    p.startsWith('/orders') ||
+    p.startsWith('/matching-engine') ||
+    p.startsWith('/market-orderbook')
+  )
+    openMenu.value = 'trading'
   else openMenu.value = ''
 }
 
@@ -78,7 +83,12 @@ const isActive = (path) => route.path === path
             매칭 엔진
           </button>
 
-          <button class="submenu-item" type="button">
+          <button
+            class="submenu-item"
+            :class="{ selected: isActive('/market-orderbook') }"
+            type="button"
+            @click.prevent="go('/market-orderbook')"
+          >
             <span class="menu-dot"></span>
             마켓·호가창
           </button>
