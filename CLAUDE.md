@@ -105,7 +105,7 @@ Trade tick:
 | `trade_volume` | `volume` | Execution volume |
 | `ask_bid` | `side` | `"BUY"` / `"SELL"` — remapped from Upbit's `"BID"`/`"ASK"` for clarity (BID→BUY, ASK→SELL) |
 
-Storage target is **AWS S3** (not local disk) — file-writing and S3 upload are not implemented yet; this section only fixes the JSON shape ahead of that work.
+Storage target is **AWS S3** (not local disk) for prod. The bucket itself now exists (see the Infra section below), but the actual S3 upload code is still a stub (`dataset.s3Storage` always returns a "not implemented" error) — dev currently writes to local disk via `dataset.localStorage`, selected by `APP_ENV` in `backend/config`.
 
 ### Multi-market collection (planned, not yet implemented)
 
@@ -125,6 +125,25 @@ Storage target is **AWS S3** (not local disk) — file-writing and S3 upload are
 ### Upload/generation timing — hybrid (decided)
 
 Simulation data is served via **both** pre-generated files and on-demand generation: some batch/stream files may be created ahead of time, but the trader app can also request a market+period that doesn't exist yet, triggering on-the-fly collection from Upbit → S3 upload → serve. The `HeadObject`-based idempotency check above is what makes this work either way. Exact API shape for "request a period" is not designed yet.
+
+## Infra (Terraform)
+
+`infra/` holds this project's Terraform. **This AWS account (`727646470302`, `ap-northeast-2`) is shared across multiple teams** — other teams' buckets/roles already exist there (`team5-*`, `team2-doro-*`, etc.), so anything created here is namespaced `team1-*` to avoid collisions.
+
+- **`infra/bootstrap/`** — one-off bootstrap stack that creates the Terraform state bucket itself (chicken-and-egg: the state bucket can't be its own backend on first apply). Its own state now lives in that same bucket under `bootstrap/terraform.tfstate` (see below) — it was applied once with local state, and after the bucket existed, migrated onto S3 and the local `.tfstate` was removed. **Local Terraform state in this repo's working directory has already been lost once** (this folder appears to sync via OneDrive, which is suspected to have interfered with the local `.tfstate` file) — this is why bootstrap state was moved onto S3 immediately rather than left local.
+- **`infra/`** (root) — main stack, backed by S3 remote state.
+
+**S3 buckets (both created, both tagged `Team = team1`):**
+- `team1-terraform-state-s3` — Terraform state. Versioning + SSE-S3 encryption + full public-access block. Holds two state files as separate keys in the same bucket:
+  - `bootstrap/terraform.tfstate` — the bootstrap stack's own state (`infra/bootstrap/`)
+  - `truss/terraform.tfstate` — the main stack's state (`infra/` root)
+  
+  Any future Terraform stack (e.g. for EC2/EKS compute) should follow the same convention: new `key = "<stack-name>/terraform.tfstate"` in this same bucket, rather than a new bucket.
+- `team1-truss-market-data` — the batch/stream JSON data bucket described above. SSE-S3 encryption + full public-access block, **no lifecycle rules** (per the "no lifecycle policy" decision above).
+
+**Both bucket resources have `lifecycle { prevent_destroy = true }`** in their Terraform config — an accidental `terraform destroy` or a config change that would force-replace the bucket will error out instead of deleting it. This does not protect against manual deletion via the console/CLI, only against Terraform-driven destroys.
+
+**Decided**: the backend will authenticate to `team1-truss-market-data` via whatever EC2 instance profile / EKS IRSA role ends up running it, once that compute infra is provisioned — not via a separate personal/dev IAM user. Practical implication: `dataset.s3Storage` stays a stub (returns "not implemented") until that compute infra exists; there's no point implementing the real S3 upload code before then, since there's nothing to test it against locally. Terraform itself currently authenticates as the shared student IAM user (`a-student-05`), which already has broad account permissions — that's fine for provisioning buckets but is not the identity the backend will use at runtime.
 
 ## Conventions
 
