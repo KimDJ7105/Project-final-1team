@@ -236,3 +236,5 @@ override.tf.json
 *_override.tf.json
 tfplan.bin
 # .terraform.lock.hcl는 provider 버전 고정을 위해 커밋합니다 (ignore 대상 아님)
+*.pem
+infra/dist/
