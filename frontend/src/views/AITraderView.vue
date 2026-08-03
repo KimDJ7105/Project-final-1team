@@ -30,6 +30,10 @@ const meanReversion = ref(13)
 const noise = ref(16)
 const whale = ref(5)
 
+// UI messages
+const infoMessage = ref('')
+const errorMessage = ref('')
+
 const traderSum = computed(
   () => mm.value + momentum.value + meanReversion.value + noise.value + whale.value,
 )
@@ -69,22 +73,82 @@ const canCreate = computed(() => {
   return true
 })
 
-const createScenario = async () => {
-  if (!canCreate.value) return
-  creating.value = true
-  created.value = false
+// Build the request payload (separated so API call can be added later)
+const buildScenarioPayload = () => {
+  return {
+    name: scenarioName.value,
+    market: market.value,
+    snapshot: snapshot.value,
+    range: { start: startTime.value, end: endTime.value },
+    totalOrders: Number(totalOrders.value),
+    generationTimeSec: Number(generationTime.value),
+    createdAt: new Date().toISOString(),
+    targetThroughput: Math.round(Number(totalOrders.value) / (Number(generationTime.value) || 1)),
+    traderRatios: {
+      marketMaker: Number(mm.value),
+      momentum: Number(momentum.value),
+      meanReversion: Number(meanReversion.value),
+      noise: Number(noise.value),
+      whale: Number(whale.value),
+    },
+  }
+}
 
-  // TODO: POST /api/trader/scenarios 연동
-  setTimeout(() => {
-    result.value = {
-      status: '생성 완료',
-      id: 'SCN-20260731-001',
-      file: 'ai-orders-btc-20260731-v1.jsonl',
-      orders: totalOrders.value,
-    }
+// Handler that will eventually call the backend; for now it receives the payload
+// and only logs it so API integration can be added inside this function later.
+const handleCreateScenario = async (payload) => {
+  // Placeholder for future API call: POST /api/trader/scenarios
+  console.log('Prepared scenario payload:', payload)
+  infoMessage.value = '백엔드 연결 전: 시나리오 요청 데이터가 준비되었습니다.'
+}
+
+const createScenario = async () => {
+  // Primary enablement is trader ratio sum === 100 (button enabled). On click,
+  // validate other input fields before preparing payload.
+  errorMessage.value = ''
+  infoMessage.value = ''
+
+  if (traderSum.value !== 100) {
+    errorMessage.value = '트레이더 비율 합계가 100%여야 생성할 수 있습니다.'
+    return
+  }
+
+  if (!scenarioName.value) {
+    errorMessage.value = '시나리오 이름을 입력하세요.'
+    return
+  }
+  if (!market.value) {
+    errorMessage.value = '대상 마켓을 선택하세요.'
+    return
+  }
+  if (!snapshot.value) {
+    errorMessage.value = '시세 스냅샷을 선택하세요.'
+    return
+  }
+  if (!startTime.value || !endTime.value) {
+    errorMessage.value = '데이터 기간의 시작/종료 시각을 입력하세요.'
+    return
+  }
+  if (new Date(startTime.value) >= new Date(endTime.value)) {
+    errorMessage.value = '시작 시각은 종료 시각보다 이전이어야 합니다.'
+    return
+  }
+  if (!(totalOrders.value > 0)) {
+    errorMessage.value = '목표 주문 수를 0보다 크게 입력하세요.'
+    return
+  }
+  if (!(generationTime.value > 0)) {
+    errorMessage.value = '생성 시간을 0보다 크게 입력하세요.'
+    return
+  }
+
+  creating.value = true
+  try {
+    const payload = buildScenarioPayload()
+    await handleCreateScenario(payload)
+  } finally {
     creating.value = false
-    created.value = true
-  }, 800)
+  }
 }
 
 const reset = () => {
@@ -103,6 +167,8 @@ const reset = () => {
   creating.value = false
   created.value = false
   result.value = { status: '', id: '', file: '', orders: 0 }
+  infoMessage.value = ''
+  errorMessage.value = ''
 }
 </script>
 
@@ -179,21 +245,23 @@ const reset = () => {
           :key="idx"
         >
           <div class="trader-label">{{ t.name }}</div>
-          <input type="range" min="0" max="100" v-model.number="t.ref.value" />
-          <div class="trader-value">{{ t.ref.value }}%</div>
+          <input type="range" min="0" max="100" v-model.number="t.ref" />
+          <div class="trader-value">{{ t.ref }}%</div>
         </div>
 
         <div class="ratio-sum" :class="{ valid: traderSum === 100, invalid: traderSum !== 100 }">
-          <span v-if="traderSum === 100">트레이더 비율 합계 100%</span>
-          <span v-else>트레이더 비율의 합계가 100%여야 합니다</span>
+          트레이더 비율 합계: {{ traderSum }}%
         </div>
 
         <div class="actions">
-          <button class="btn-primary" :disabled="!canCreate || creating" @click="createScenario">
+          <button class="btn-primary" :disabled="traderSum !== 100 || creating" @click="createScenario">
             AI 시나리오 생성
           </button>
           <button class="btn-dark" @click="reset">초기화</button>
         </div>
+
+        <div v-if="errorMessage" class="error-note">{{ errorMessage }}</div>
+        <div v-if="infoMessage" class="info-note">{{ infoMessage }}</div>
 
         <div v-if="created" class="created-box">
           <div class="created-left">
@@ -551,6 +619,21 @@ const reset = () => {
   margin-top: 12px;
   color: #9fb0c2;
   font-size: 13px;
+}
+
+.error-note {
+  margin-top: 10px;
+  color: #ff6b6b;
+  font-weight: 700;
+}
+
+.info-note {
+  margin-top: 8px;
+  color: #cfe6ff;
+  background: #072037;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid #163247;
 }
 
 @media (max-width: 900px) {

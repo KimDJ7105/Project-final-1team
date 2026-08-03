@@ -17,6 +17,13 @@ const updateOpenMenu = () => {
     p.startsWith('/market-orderbook')
   )
     openMenu.value = 'trading'
+  else if (
+    p.startsWith('/monitoring') ||
+    p.startsWith('/test-results') ||
+    p.startsWith('/fault-recovery')
+  )
+    openMenu.value = 'observe'
+  else if (p.startsWith('/market-stream') || p.startsWith('/deployment-ops')) openMenu.value = 'data'
   else openMenu.value = ''
 }
 
@@ -103,10 +110,7 @@ const isActive = (path) => route.path === path
         <div v-if="openMenu === 'loadtest'" class="submenu">
           <button
             class="submenu-item"
-            :class="{
-              selected: isActive('/load-test/replay'),
-              'loadtest-selected': isActive('/load-test/replay'),
-            }"
+            :class="{ selected: isActive('/load-test/replay') }"
             type="button"
             @click.prevent="go('/load-test/replay')"
           >
@@ -120,23 +124,74 @@ const isActive = (path) => route.path === path
             type="button"
             @click.prevent="go('/load-test/ai-trader')"
           >
-            <span
-              class="menu-dot"
-              :style="{ background: isActive('/load-test/ai-trader') ? '#3478f6' : '#556172' }"
-            ></span>
+            <span class="menu-dot"></span>
             AI 트레이더
           </button>
         </div>
 
-        <button class="menu-button" type="button">
+        <button class="menu-button" type="button" @click="toggleMenu('observe')">
           <span>관찰·검증</span>
-          <span class="arrow">›</span>
+          <span class="arrow" :class="{ open: openMenu === 'observe' }">›</span>
         </button>
 
-        <button class="menu-button" type="button">
+        <div v-if="openMenu === 'observe'" class="submenu">
+          <button
+            class="submenu-item"
+            :class="{ selected: isActive('/monitoring') }"
+            type="button"
+            @click.prevent="go('/monitoring')"
+          >
+            <span class="menu-dot"></span>
+            실시간 모니터링
+          </button>
+
+          <button
+            class="submenu-item"
+            :class="{ selected: isActive('/test-results') }"
+            type="button"
+            @click.prevent="go('/test-results')"
+          >
+            <span class="menu-dot"></span>
+            결과 추적
+          </button>
+
+          <button
+            class="submenu-item"
+            :class="{ selected: isActive('/fault-recovery') }"
+            type="button"
+            @click.prevent="go('/fault-recovery')"
+          >
+            <span class="menu-dot"></span>
+            장애 주입·복구
+          </button>
+        </div>
+
+        <button class="menu-button" type="button" @click="toggleMenu('data')">
           <span>데이터·운영</span>
-          <span class="arrow">›</span>
+          <span class="arrow" :class="{ open: openMenu === 'data' }">›</span>
         </button>
+
+        <div v-if="openMenu === 'data'" class="submenu">
+          <button
+            class="submenu-item"
+            :class="{ selected: isActive('/market-stream') }"
+            type="button"
+            @click.prevent="go('/market-stream')"
+          >
+            <span class="menu-dot"></span>
+            시세 처리
+          </button>
+
+          <button
+            class="submenu-item"
+            :class="{ selected: isActive('/deployment-ops') }"
+            type="button"
+            @click.prevent="go('/deployment-ops')"
+          >
+            <span class="menu-dot"></span>
+            배포·운영
+          </button>
+        </div>
       </nav>
 
       <div class="system-badge">
@@ -256,27 +311,26 @@ button {
   gap: 10px;
   color: #f3f7fc;
   background: #11243a;
-  border: 0;
+  border: 1px solid transparent;
   border-radius: 9px;
   cursor: pointer;
 }
 
+/* Selected submenu: darker blue background with blue border and bright text/dot */
 .submenu-item.selected {
-  background: #0d1b2a;
+  background: #05345f; /* 진한 파란색 배경 */
+  border: 1px solid #3478f6; /* 파란색 테두리 */
+  color: #eaf4ff; /* 밝은 글자색 */
 }
 
-.submenu-item.loadtest-selected {
-  background: #0b2f54;
-}
-
-.submenu-item.loadtest-selected .menu-dot {
-  background: #3478f6;
+.submenu-item.selected .menu-dot {
+  background: #eaf4ff; /* 밝은 점 아이콘 */
 }
 
 .menu-dot {
   width: 8px;
   height: 8px;
-  background: #3478f6;
+  background: #556172; /* 기본: 회색 점 */
   border-radius: 50%;
 }
 
@@ -302,8 +356,11 @@ button {
 }
 
 .main-content {
-  width: calc(100% - 230px);
-  max-width: 1500px;
+  /* Use remaining space next to the fixed sidebar */
+  flex: 1;
+  width: auto;
+  max-width: none;
+  min-width: 0;
   margin-left: 230px;
   padding: 32px;
 }
