@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-This is an **infrastructure load-testing project**, not a production trading system. The end goal: collect real historical market data from Upbit, feed it to a (not-yet-built) "trader" application that replays it as massive simulated trading traffic against the backend, and use that traffic to load-test the backend + infra. `backend/` currently only does the data-collection half; `front/` is an empty placeholder for a future frontend.
+This is an **infrastructure load-testing project**, not a production trading system. The end goal: collect real historical market data from Upbit, feed it to a (not-yet-built) "trader" application that replays it as massive simulated trading traffic against the backend, and use that traffic to load-test the backend + infra. `backend/` currently only does the data-collection half; `frontend/` is a separate Vue/Vite app (see its own `frontend/README.md`) not yet wired to the backend.
 
 Backend service that collects cryptocurrency market data from the Upbit exchange (REST + websocket APIs) and is being wired up to publish that data to Kafka for downstream processing.
 
-The repo is mid-migration (see recent commit history): the Kafka producer exists but is **not currently called from `main.go`** (it was wired once, hit errors, and was pulled back out — see commit history), and `.env`/`godotenv`-based config loading is added as a dependency but not yet called from code. Expect to find work-in-progress wiring — check `main.go` before assuming the producer or env loading is actually active.
+The repo is mid-migration (see recent commit history): the Kafka producer exists but is **not currently called from `main.go`** (it was wired once, hit errors, and was pulled back out — see commit history). `.env`/`godotenv`-based config loading (`backend/config`) *is* active — `config.Load()` is called from `main.go` and reads `APP_ENV`, `S3_BUCKET`, `PORT`. Expect to find work-in-progress wiring elsewhere — check `main.go` before assuming the Kafka producer is active.
 
 ## Commands
 
@@ -17,7 +17,7 @@ All Go commands run from `backend/` (that's the Go module root — `go.mod` decl
 ```
 cd backend
 go build ./...        # build everything
-go run .               # run main.go (fetches a day of KRW-BTC data from Upbit REST API and prints it)
+go run .               # starts the HTTP server (see backend/main.go); POST /v1/collect triggers a collection
 go vet ./...
 go mod tidy
 ```
@@ -35,7 +35,9 @@ Brings up a single-node KRaft-mode Kafka broker (`apache/kafka:3.7.0`) on `local
 
 ## Architecture
 
-- **`backend/main.go`** — entrypoint. Currently a one-shot script: fetches a fixed 24h window of `KRW-BTC` data from Upbit's REST API across every granularity (tick trades, second/minute candles via pagination, and single day/week/month/year candles) and prints it. This is exploratory/demo code, not a server — there's no HTTP listener or long-running loop here. Does not currently write to disk or call Kafka.
+- **`backend/main.go`** — entrypoint. Starts an HTTP server (`net/http`, stdlib `ServeMux`, no router dependency) on `cfg.Port` (env `PORT`, default `8080`). Only route: `POST /v1/collect`. Does not currently call Kafka.
+- **`backend/server.go`** — `collectHandler`: parses `{"date": "YYYY-MM-DD"}` from the request body, computes the UTC `[date 00:00, date+1 00:00)` window, and calls `collectAllMarkets`. Returns 400 on a malformed body/date; otherwise 200 with per-market results (a market-level failure, e.g. requesting a date more than 7 days old, shows up as that market's `status: "error"` rather than failing the whole request).
+- **`backend/collector.go`** — `collectAllMarkets` loops over `upbit.TargetMarkets`, calling `collectMarket` per market (fetches ticks + every candle granularity from `upbit`, builds batch/stream via `dataset.BuildBatch`/`BuildStream`, saves via the injected `dataset.Storage`). One market's error doesn't stop the others.
 - **`backend/upbit/candles.go`** — REST client for Upbit's `/v1/candles/*` endpoints. `FetchCandlesInRange` paginates backwards in time (via the `to` cursor) to collect all candles in `[start, end)` for fine-grained units (seconds/minutes); `FetchRecentCandles` fetches the last N candles for coarse units (days/weeks/months) where a single page suffices. Both respect Upbit's ~10 req/sec rate limit with a 110ms sleep between paginated calls.
 - **`backend/upbit/ticks.go`** — REST client for `/v1/trades/ticks` (individual trade executions). Also paginates backwards using the `cursor` (last page's `sequential_id`). Upbit only allows querying trade ticks for the last 7 days; `FetchTradeTicksForDate` enforces that and errors otherwise.
 - **`backend/upbit/websocket.go`** — legacy real-time ticker client over Upbit's websocket API (`ConnectAndListen`), explicitly marked as legacy in a source comment. Not called from `main.go` currently; streams ticker updates onto a channel for a caller to consume.
@@ -45,7 +47,7 @@ Brings up a single-node KRaft-mode Kafka broker (`apache/kafka:3.7.0`) on `local
 
 Upbit REST/websocket (`upbit` package) → Go structs (`Candle`, `TradeTick`, `UpbitTicker`) → **JSON files persisted to AWS S3** (design finalized, not yet implemented — see below) → served to the trader app on request → Kafka (`kafka.Producer`, currently unused) carries backend/trader traffic once the trader app exists.
 
-The trader app is **pull-based**: it does not receive data automatically at startup. It requests simulation data for a period from the backend, and the backend responds with the JSON file(s) covering that period (read from S3). Nothing about this request/response API is designed yet — only the file format below.
+The trader app is **pull-based**: it does not receive data automatically at startup. It requests simulation data for a period from the backend, and the backend responds with the JSON file(s) covering that period (read from S3). The *collection-trigger* side of this is now implemented (`POST /v1/collect`, see Architecture above); the *read/serve* side — the trader app asking the backend for already-generated file(s) — is still not designed, only the file format below.
 
 ### Output JSON file format (finalized design, not yet implemented)
 
@@ -105,11 +107,11 @@ Trade tick:
 | `trade_volume` | `volume` | Execution volume |
 | `ask_bid` | `side` | `"BUY"` / `"SELL"` — remapped from Upbit's `"BID"`/`"ASK"` for clarity (BID→BUY, ASK→SELL) |
 
-Storage target is **AWS S3** (not local disk) for prod. The bucket itself now exists (see the Infra section below), but the actual S3 upload code is still a stub (`dataset.s3Storage` always returns a "not implemented" error) — dev currently writes to local disk via `dataset.localStorage`, selected by `APP_ENV` in `backend/config`.
+Storage target is **AWS S3** (not local disk) for prod. The bucket exists (see the Infra section below) and `dataset.s3Storage` is a real implementation (`aws-sdk-go-v2`, `HeadObject`-then-`PutObject` idempotency check, region hardcoded to `ap-northeast-2`) — verified end-to-end against an EC2 instance profile. Dev writes to local disk via `dataset.localStorage` instead; `APP_ENV` in `backend/config` selects between the two.
 
-### Multi-market collection (planned, not yet implemented)
+### Multi-market collection (implemented)
 
-`main.go` currently hardcodes a single market (`KRW-BTC`). The real target is ~20 markets/coins. Decisions so far:
+`upbit.TargetMarkets` (`backend/upbit/markets.go`) lists the ~20 target markets/coins; `collectAllMarkets` (`backend/collector.go`) loops over all of them for every request. Decisions so far:
 
 - **One batch file + one stream file per market** (not one shared file for all markets) — keeps re-collection/re-generation of one coin from touching the others, and maps directly onto the S3 key layout below.
 - On the trader-app side, the intended design is **one goroutine per market**, each independently walking its own stream file's `events` array in `ts` order and pacing sends by the gap between consecutive `ts` values — this is what actually produces the "many coins trading concurrently" load pattern, not just a speed optimization. Goroutines should share a single HTTP client / Kafka producer rather than each opening their own connection, and errors in one market's goroutine must not abort the others (isolate per-goroutine, collect via `WaitGroup`/`errgroup`).
@@ -124,7 +126,7 @@ Storage target is **AWS S3** (not local disk) for prod. The bucket itself now ex
 
 ### Upload/generation timing — hybrid (decided)
 
-Simulation data is served via **both** pre-generated files and on-demand generation: some batch/stream files may be created ahead of time, but the trader app can also request a market+period that doesn't exist yet, triggering on-the-fly collection from Upbit → S3 upload → serve. The `HeadObject`-based idempotency check above is what makes this work either way. Exact API shape for "request a period" is not designed yet.
+Simulation data is served via **both** pre-generated files and on-demand generation: some batch/stream files may be created ahead of time, but the trader app can also request a market+period that doesn't exist yet, triggering on-the-fly collection from Upbit → S3 upload → serve. The `HeadObject`-based idempotency check above is what makes this work either way. `POST /v1/collect` (see Architecture above) is the on-demand-collection trigger; it always runs across all 20 `upbit.TargetMarkets` for the requested date rather than accepting a single market — there's no per-market request shape yet. The trader-app-facing "give me the file(s) for this period" read/serve API is still not designed.
 
 ## Infra (Terraform)
 
@@ -143,7 +145,7 @@ Simulation data is served via **both** pre-generated files and on-demand generat
 
 **Both bucket resources have `lifecycle { prevent_destroy = true }`** in their Terraform config — an accidental `terraform destroy` or a config change that would force-replace the bucket will error out instead of deleting it. This does not protect against manual deletion via the console/CLI, only against Terraform-driven destroys.
 
-**Decided**: the backend will authenticate to `team1-truss-market-data` via whatever EC2 instance profile / EKS IRSA role ends up running it, once that compute infra is provisioned — not via a separate personal/dev IAM user. Practical implication: `dataset.s3Storage` stays a stub (returns "not implemented") until that compute infra exists; there's no point implementing the real S3 upload code before then, since there's nothing to test it against locally. Terraform itself currently authenticates as the shared student IAM user (`a-student-05`), which already has broad account permissions — that's fine for provisioning buckets but is not the identity the backend will use at runtime.
+**Decided**: the backend authenticates to `team1-truss-market-data` via whatever EC2 instance profile / EKS IRSA role ends up running it — not via a separate personal/dev IAM user. `infra/iam.tf` already provisions `aws_iam_role.team1_ec2_role` / `aws_iam_role_policy.team1_ec2_s3_policy` (scoped to just this bucket) / `aws_iam_instance_profile.team1_ec2_profile`, kept around specifically so the next compute (EC2 or EKS) can attach it without recreating it. This was verified once already: a temporary EC2 in `infra/network.tf`'s public subnet ran the backend with this instance profile and uploaded all 20 markets to S3 successfully, then was torn down (the EC2 instance, its keypair, and its security group — not the IAM role/policy/instance profile, which stay). Terraform itself authenticates as the shared student IAM user (`a-student-05`), which already has broad account permissions — that's fine for provisioning resources but is not the identity the backend uses at runtime.
 
 ## Conventions
 
