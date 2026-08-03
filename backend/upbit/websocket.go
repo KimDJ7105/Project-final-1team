@@ -1,3 +1,5 @@
+// 레거시 코드 : 실시간으로 데이터 읽어오는 코드
+
 package upbit
 
 import (
