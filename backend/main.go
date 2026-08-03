@@ -14,6 +14,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/collect", collectHandler(storage))
+	mux.HandleFunc("GET /v1/markets/data", manifestHandler())
 
 	addr := ":" + cfg.Port
 	log.Printf("서버 시작: %s", addr)

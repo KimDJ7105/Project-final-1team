@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
 	"backend/dataset"
+	"backend/upbit"
 )
 
 // collectRequest는 POST /v1/collect의 요청 본문입니다.
@@ -48,6 +50,44 @@ func collectHandler(storage dataset.Storage) http.HandlerFunc {
 			},
 			Results: results,
 		})
+	}
+}
+
+// marketManifestEntry는 한 마켓의 batch/stream 파일을 받아올 수 있는 URL입니다.
+type marketManifestEntry struct {
+	Market    string `json:"market"`
+	BatchURL  string `json:"batchUrl"`
+	StreamURL string `json:"streamUrl"`
+}
+
+// manifestResponse는 GET /v1/markets/data의 응답 본문입니다.
+type manifestResponse struct {
+	Date    string                `json:"date"`
+	Markets []marketManifestEntry `json:"markets"`
+}
+
+// manifestHandler는 요청받은 날짜에 대해 upbit.TargetMarkets 전체의
+// batch/stream 파일 URL 목록(매니페스트)을 돌려줍니다. 파일 내용 자체는
+// GET /v1/markets/{market}/{batch|stream}에서 다루므로 여기서는 저장소를
+// 건드리지 않고 URL만 만들어 반환합니다.
+func manifestHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		date := r.URL.Query().Get("date")
+		if _, err := time.Parse("2006-01-02", date); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "date는 YYYY-MM-DD 형식이어야 합니다")
+			return
+		}
+
+		markets := make([]marketManifestEntry, 0, len(upbit.TargetMarkets))
+		for _, market := range upbit.TargetMarkets {
+			markets = append(markets, marketManifestEntry{
+				Market:    market,
+				BatchURL:  fmt.Sprintf("/v1/markets/%s/batch?date=%s", market, date),
+				StreamURL: fmt.Sprintf("/v1/markets/%s/stream?date=%s", market, date),
+			})
+		}
+
+		writeJSON(w, http.StatusOK, manifestResponse{Date: date, Markets: markets})
 	}
 }
 
