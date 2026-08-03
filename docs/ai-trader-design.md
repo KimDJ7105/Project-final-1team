@@ -13,6 +13,7 @@
 | 2026-08-03 | 요구사항 정의서 내부 조항 번호(1.2.1 등)·문서 내부 장 번호 인용을 정리하고, 요구사항 문구를 그대로 인용해 방어하는 서술을 직접 서술로 축약 |
 | 2026-08-03 | 3장에 봇 5종의 구체적 구현 알고리즘 추가 — 규칙 기반 3종의 계산 로직, LLM 기반 2종의 프롬프트 입력 데이터 |
 | 2026-08-03 | 6장 인프라 항목의 "백엔드와 클러스터 재사용" 문구를 수정 — AI 트레이더·리플레이 엔진·백엔드가 각각 별도 EKS 클러스터를 쓰는 것으로 architecture.md와 정합성 맞춤 |
+| 2026-08-03 | 판단 로직 봇 5종 중 평균회귀 봇을 모멘텀 추종 봇 위로 재배치. 모멘텀 추종·평균회귀 봇 ↔ Bedrock 화살표를 4개(양방향)에서 각 봇→Bedrock 단방향 2개로 정리 — 봇별 연결은 유지하면서 교차선은 줄임 |
 
 ## 관련 문서
 - [요구사항 정의서](requirements.md) FR-14, FR-16, FR-17, FR-26 근거
@@ -47,8 +48,8 @@ flowchart LR
             B1[마켓메이커 봇]
             B4[노이즈 봇]
             B5[대량 주문 봇]
-            B2[모멘텀 추종 봇]
             B3[평균회귀 봇]
+            B2[모멘텀 추종 봇]
         end
 
         ORDER[주문 생성 로직]
@@ -66,10 +67,8 @@ flowchart LR
 
     KAFKA --> FEED
 
-    B2 -->|프롬프트| BEDROCK["AWS Bedrock<br/>Claude Sonnet 5 / Haiku 4.5"]
-    B3 -->|프롬프트| BEDROCK
-    BEDROCK -->|방향 신호 JSON| B2
-    BEDROCK -->|방향 신호 JSON| B3
+    B2 -->|프롬프트 · 방향 신호 JSON| BEDROCK["AWS Bedrock<br/>Claude Sonnet 5 / Haiku 4.5"]
+    B3 -->|프롬프트 · 방향 신호 JSON| BEDROCK
 
     ORDER -->|POST/DELETE 주문| API["접수 API (A)"]
 
