@@ -1,0 +1,143 @@
+# 시세 데이터 수집·전달 API 명세서
+
+## 변경 이력
+| 날짜 | 변경 내용 |
+|---|---|
+| 2026-08-03 | 수집 트리거 API(`POST /v1/collect`, 구현 완료)와 트레이더 전달 API(매니페스트+개별 파일 GET, 설계 확정·미구현) 최초 작성 |
+
+## 관련 문서
+- 이 문서가 다루는 데이터 포맷의 근거는 [CLAUDE.md](../CLAUDE.md)의 "Output JSON file format" 절이다 (배치/스트림 JSON 필드 매핑 전체는 그쪽이 원본).
+- 주문 접수·매칭 쪽 API는 별도 문서 [api-specification.md](api-specification.md)에서 관리한다. 이 문서는 [requirements.md](requirements.md) FR-14(시세 수집), FR-16(트레이더 봇 데이터 전달 분류)에 대응한다.
+
+---
+
+## 1. 개요
+
+시세 데이터는 **수집(백엔드 ← 업비트)**과 **전달(트레이더 ← 백엔드)**이 서로 다른 API로 분리되어 있다. 수집은 이미 구현되어 있고, 전달은 이번에 설계를 확정했다(구현은 아직).
+
+| API | 방향 | 상태 |
+|---|---|---|
+| `POST /v1/collect` | 관리자/운영 → 백엔드 → 업비트 | **구현 완료** |
+| `GET /v1/markets/data` (매니페스트) | 트레이더 → 백엔드 | 설계 확정, 미구현 |
+| `GET /v1/markets/{market}/{kind}` (개별 파일) | 트레이더 → 백엔드 | 설계 확정, 미구현 |
+
+대상 마켓은 항상 [requirements.md 1.1.4](requirements.md)의 20개 전체이며, 개별 마켓 단위 요청은 지원하지 않는다 — 날짜 하나로 20개 마켓 전체가 한 번에 처리된다.
+
+---
+
+## 2. 수집 트리거 API (구현됨)
+
+### `POST /v1/collect`
+
+지정한 날짜의 UTC 00:00~다음날 00:00 구간을 20개 마켓 전체에 대해 업비트에서 수집해 batch/stream JSON으로 저장한다. 구현: [backend/server.go](../backend/server.go), [backend/collector.go](../backend/collector.go).
+
+**Request**
+```json
+{ "date": "2026-07-27" }
+```
+
+**Response 200 OK**
+```json
+{
+  "date": "2026-07-27",
+  "range": { "start": "2026-07-27T00:00:00Z", "end": "2026-07-28T00:00:00Z" },
+  "results": [
+    { "market": "KRW-BTC", "status": "ok", "batchPath": "...", "streamPath": "..." },
+    { "market": "KRW-USDT", "status": "error", "error": "업비트 체결 내역은 최근 7일 이내만 조회할 수 있습니다 (daysAgo=12)" }
+  ]
+}
+```
+
+**Response 400 Bad Request** — `date` 누락 또는 `YYYY-MM-DD` 형식이 아님
+```json
+{ "error": "date는 YYYY-MM-DD 형식이어야 합니다" }
+```
+
+| 항목 | 동작 |
+|---|---|
+| 응답 방식 | **동기** — 20개 마켓 수집이 전부 끝난 뒤 응답 (마켓당 수 초~수십 초, 전체 수 분 소요될 수 있음) |
+| 마켓별 실패 | 요청 전체를 실패시키지 않고 `results[].status: "error"`로 개별 표시 (예: 7일 초과 날짜 요청 시 체결 내역 조회만 실패) |
+| 멱등성 | 저장소가 prod(S3)일 때 `HeadObject` 확인 후 이미 있으면 재생성하지 않음 (`dataset.s3Storage`) |
+
+---
+
+## 3. 트레이더 전달 API (설계 확정, 미구현)
+
+### 설계 결정: 매니페스트 + 개별 파일 프록시
+
+40개(20개 마켓 × batch/stream) 파일을 한 응답에 전부 담지 않는다 — stream 파일 하나가 실측 기준 수 MB(체결이 많은 마켓은 더 큼)라, 20개를 한 JSON에 합치면 응답이 과도하게 커진다. 대신:
+
+1. **매니페스트 API**로 "어떤 URL에서 어떤 파일을 받을 수 있는지" 목록만 먼저 전달
+2. 트레이더가 그 목록을 보고 **40개 파일을 개별 GET으로, 병렬로** 받아감
+
+파일 내용은 **S3 presigned URL이 아니라 백엔드가 직접 프록시**한다 — 트레이더가 S3 자격증명을 전혀 몰라도 되고(CLAUDE.md의 "트레이더는 백엔드 API로만 접근" 원칙과 일치), presigned URL의 만료 시간 관리도 필요 없어진다.
+
+### `GET /v1/markets/data?date=2026-07-27` (매니페스트)
+
+**Response 200 OK**
+```json
+{
+  "date": "2026-07-27",
+  "markets": [
+    {
+      "market": "KRW-BTC",
+      "batchUrl": "/v1/markets/KRW-BTC/batch?date=2026-07-27",
+      "streamUrl": "/v1/markets/KRW-BTC/stream?date=2026-07-27"
+    }
+    // ... 20개 마켓 전체
+  ]
+}
+```
+
+### `GET /v1/markets/{market}/{kind}?date=2026-07-27` (개별 파일)
+
+`{kind}`는 `batch` 또는 `stream`. 응답 바디는 [CLAUDE.md](../CLAUDE.md)에 정의된 batch/stream JSON 파일 내용 그대로 — 저장된 파일을 백엔드가 읽어서(dev: 로컬 디스크, prod: S3 `GetObject`) 그대로 흘려보낸다.
+
+### 미해결 사항
+
+매니페스트 발급 시점에 파일이 아직 없으면(하이브리드 온디맨드 생성 설계, CLAUDE.md 참고) 매니페스트 API가 그 자리에서 수집을 트리거할지, 아니면 매니페스트는 "있어야 할 URL 목록"만 기계적으로 돌려주고 개별 파일 GET 쪽에서 존재 확인·생성을 처리할지는 **아직 결정하지 않았다**.
+
+---
+
+## 4. 트레이더 측 처리 흐름
+
+핵심은 **"다운로드"와 "시간별 재생"이 완전히 분리된 두 단계**라는 것이다. HTTP 연결을 몇 시간씩 붙잡고 있는 게 아니라, 파일을 빠르게 통째로 받은 뒤 그 이후의 페이싱은 트레이더 프로세스 내부에서만 일어난다.
+
+```mermaid
+sequenceDiagram
+    participant T as 트레이더 앱
+    participant B as 백엔드
+    participant U as 업비트
+
+    Note over T,B: 1단계 — 수집 (사전에, 또는 온디맨드)
+    T->>B: POST /v1/collect { date }
+    B->>U: 20개 마켓 시세 조회
+    B-->>T: 마켓별 결과(성공/실패)
+
+    Note over T,B: 2단계 — 매니페스트 조회
+    T->>B: GET /v1/markets/data?date=...
+    B-->>T: 40개 파일 URL 목록
+
+    Note over T,B: 3단계 — 40개 파일 병렬 다운로드 (수 초 단위로 완료)
+    par 마켓별 batch + stream
+        T->>B: GET /v1/markets/KRW-BTC/batch
+        B-->>T: batch JSON
+        T->>B: GET /v1/markets/KRW-BTC/stream
+        B-->>T: stream JSON
+    and
+        T->>B: GET /v1/markets/KRW-USDT/batch
+        B-->>T: batch JSON
+        T->>B: GET /v1/markets/KRW-USDT/stream
+        B-->>T: stream JSON
+    end
+
+    Note over T: 4단계 — 마켓별 독립 재생 (수 분~수 시간, HTTP와 무관)
+    loop 마켓당 1개 고루틴
+        T->>T: events[i]와 events[i+1]의 ts 간격만큼 대기 후 다음 이벤트 처리
+    end
+```
+
+**핵심 규칙**
+- 어떤 마켓이든 자기 batch+stream 2개 파일이 다 도착하는 즉시 그 마켓의 재생 고루틴을 시작한다 — 20개 마켓 전체 다운로드를 기다릴 필요 없음(CLAUDE.md의 "마켓당 고루틴 1개" 설계와 연결).
+- 페이싱(시간 간격만큼 대기)은 순수히 트레이더 프로세스 내부 로직이며, 어떤 형태의 장시간 HTTP 커넥션도 필요하지 않다.
+- 파일이 이미 존재하면 몇 번을 재요청해도 같은 내용이 온다(수집 API의 멱등성 덕분) — 재시도가 안전하다.
