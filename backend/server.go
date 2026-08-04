@@ -14,7 +14,14 @@ import (
 
 // collectRequest는 POST /v1/collect의 요청 본문입니다.
 type collectRequest struct {
-	Date string `json:"date"` // YYYY-MM-DD (UTC 기준 하루)
+	Date string `json:"date"` // YYYY-MM-DD (KST 기준 하루)
+}
+
+// parseDate는 "YYYY-MM-DD"를 KST(한국 표준시) 자정 기준으로 파싱합니다.
+// 업비트가 한국 거래소라 팀 결정으로 날짜 경계를 KST로 맞춥니다 — UTC였다면
+// 요청한 날짜와 실제 수집 구간이 9시간 밀렸을 것입니다.
+func parseDate(s string) (time.Time, error) {
+	return time.ParseInLocation("2006-01-02", s, upbit.KST)
 }
 
 // collectResponse는 POST /v1/collect의 정상 응답 본문입니다.
@@ -34,12 +41,11 @@ func collectHandler(storage dataset.Storage) http.HandlerFunc {
 			return
 		}
 
-		start, err := time.Parse("2006-01-02", req.Date)
+		start, err := parseDate(req.Date)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "date는 YYYY-MM-DD 형식이어야 합니다")
 			return
 		}
-		start = start.UTC()
 		end := start.Add(24 * time.Hour)
 
 		results := collectAllMarkets(storage, start, end)
@@ -75,7 +81,7 @@ type manifestResponse struct {
 func manifestHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		date := r.URL.Query().Get("date")
-		if _, err := time.Parse("2006-01-02", date); err != nil {
+		if _, err := parseDate(date); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "date는 YYYY-MM-DD 형식이어야 합니다")
 			return
 		}
@@ -109,12 +115,11 @@ func fileHandler(storage dataset.Storage) http.HandlerFunc {
 			return
 		}
 
-		start, err := time.Parse("2006-01-02", r.URL.Query().Get("date"))
+		start, err := parseDate(r.URL.Query().Get("date"))
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "date는 YYYY-MM-DD 형식이어야 합니다")
 			return
 		}
-		start = start.UTC()
 		end := start.Add(24 * time.Hour)
 
 		file, err := loadFile(storage, market, kind, start, end)

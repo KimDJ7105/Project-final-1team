@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"backend/upbit"
 )
 
 // localStorage는 JSON 파일을 로컬 디스크에 저장합니다 (dev 환경 기본값).
@@ -82,7 +84,11 @@ func (s *localStorage) filePath(market string, start, end time.Time, kind string
 	return filepath.Join(s.root, market, filename)
 }
 
-// formatFileTime은 파일명에 안전한(콜론 없는) 시각 포맷을 반환합니다.
+// formatFileTime은 파일명에 안전한(콜론 없는) 시각 포맷을 KST 기준으로 반환합니다.
+// KST로 표시하는 이유: 팀 결정으로 날짜 경계 자체를 KST로 맞췄으니(server.go의
+// parseDate), 파일명도 요청한 날짜와 시각적으로 일치해야 함 (7/27 요청이 UTC로
+// 찍히면 파일명이 26일 15시로 보여 헷갈림). "Z"(UTC 표기) 접미사는 KST 표시에
+// 안 맞아서 뺐습니다 — 콜론 없는 KST 로컬 시각이라는 뜻입니다.
 func formatFileTime(t time.Time) string {
-	return t.UTC().Format("20060102T150405Z")
+	return t.In(upbit.KST).Format("20060102T150405")
 }

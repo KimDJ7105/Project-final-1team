@@ -8,7 +8,7 @@ import (
 )
 
 func TestBuildBatchMapsCandleFields(t *testing.T) {
-	start := time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC)
+	start := time.Date(2026, 7, 27, 0, 0, 0, 0, upbit.KST)
 	end := start.Add(24 * time.Hour)
 
 	days := []upbit.Candle{{
@@ -25,8 +25,8 @@ func TestBuildBatchMapsCandleFields(t *testing.T) {
 	if batch.Market != "KRW-BTC" {
 		t.Errorf("Market = %q, want KRW-BTC", batch.Market)
 	}
-	if batch.Range.Start != "2026-07-27T00:00:00Z" || batch.Range.End != "2026-07-28T00:00:00Z" {
-		t.Errorf("Range = %+v", batch.Range)
+	if batch.Range.Start != "2026-07-27T00:00:00+09:00" || batch.Range.End != "2026-07-28T00:00:00+09:00" {
+		t.Errorf("Range = %+v (KST로 표시돼야 함)", batch.Range)
 	}
 	if len(batch.Candles.Days) != 1 {
 		t.Fatalf("Days 길이 = %d, want 1", len(batch.Candles.Days))
@@ -62,8 +62,8 @@ func TestBuildStreamMergesAndSortsByTS(t *testing.T) {
 
 	// ts 오름차순(100, 200, 300, 400)으로 정렬돼야 하고, 타입이 섞여 들어와도 유지돼야 한다.
 	wantOrder := []struct {
-		ts   int64
-		typ  string
+		ts  int64
+		typ string
 	}{
 		{100, "candle_minute"},
 		{200, "trade_tick"},

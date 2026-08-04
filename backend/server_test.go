@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"backend/dataset"
+	"backend/upbit"
 )
 
 // fakeStorage는 실제 디스크/S3 없이 fileHandler를 검증하기 위한 인메모리 dataset.Storage
@@ -106,7 +107,9 @@ func newFileHandlerMux(storage dataset.Storage) *http.ServeMux {
 
 func TestFileHandlerServesExistingBatchWithoutCollecting(t *testing.T) {
 	storage := newFakeStorage()
-	start := time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC)
+	// parseDate(server.go)가 이제 KST 자정으로 파싱하므로, 여기서도 같은 타임존으로
+	// 구성해야 fileHandler가 계산하는 start/end와 일치해서 캐시 히트가 됩니다.
+	start := time.Date(2026, 7, 27, 0, 0, 0, 0, upbit.KST)
 	end := start.Add(24 * time.Hour)
 	storage.batches[fakeKey("KRW-BTC", start, end)] = dataset.BatchFile{Market: "KRW-BTC"}
 
