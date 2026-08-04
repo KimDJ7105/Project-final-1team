@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"strconv"
+	"time"
 
 	"trader/bot"
 )
@@ -11,11 +12,14 @@ import (
 // Order는 Decision을 실제 주문 형태로 바꾼 것입니다.
 // 필드 형태는 docs/api-specification.md의 POST /v1/orders 요청 바디에 맞췄습니다
 // (price/quantity를 부동소수점 오차 방지를 위해 문자열로 직렬화하는 규칙 포함).
+// TS는 주문 접수 API 요청 바디에는 안 쓰이고, 주문 기록(FR-17, record.go)에서
+// 시간순 정렬·복원에 씁니다.
 type Order struct {
 	Market   string
 	Side     string
 	Price    string
 	Quantity string
+	TS       int64
 }
 
 // NewOrder는 한 마켓의 Decision을 Order로 변환합니다. 가격은 RoundToTick으로 마켓 호가
@@ -28,6 +32,7 @@ func NewOrder(market string, d bot.Decision) Order {
 		Side:     d.Side,
 		Price:    strconv.FormatFloat(price, 'f', decimals, 64),
 		Quantity: strconv.FormatFloat(d.Quantity, 'f', -1, 64),
+		TS:       time.Now().UnixMilli(),
 	}
 }
 

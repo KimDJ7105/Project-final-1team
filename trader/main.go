@@ -10,6 +10,7 @@ import (
 	"trader/bot"
 	"trader/client"
 	"trader/order"
+	"trader/orderstore"
 	"trader/replay"
 )
 
@@ -17,14 +18,18 @@ func main() {
 	backend := flag.String("backend", "http://localhost:8080", "백엔드 base URL")
 	date := flag.String("date", "", "재생할 날짜 (YYYY-MM-DD, 필수)")
 	speed := flag.Float64("speed", 60, "재생 배속 (이벤트 간 대기 시간을 이 값으로 나눔)")
+	orderBucket := flag.String("order-bucket", "", "주문 기록을 저장할 S3 버킷 (비어있으면 ./orders 로컬 디렉터리에 저장)")
 	flag.Parse()
 
 	if *date == "" {
 		log.Fatal("-date는 필수입니다 (YYYY-MM-DD)")
 	}
-	if _, err := time.Parse("2006-01-02", *date); err != nil {
+	start, err := time.Parse("2006-01-02", *date)
+	if err != nil {
 		log.Fatalf("-date 형식이 올바르지 않습니다: %v", err)
 	}
+	start = start.UTC()
+	end := start.Add(24 * time.Hour)
 
 	httpClient := client.NewHTTPClient()
 
@@ -36,7 +41,18 @@ func main() {
 
 	// 주문 접수 API(POST /v1/orders)가 준비됐는지 아직 모르므로, 지금은 로그만 남기는
 	// 구현체를 씁니다. API가 준비되면 같은 OrderSubmitter 인터페이스의 HTTP 구현체로 교체합니다.
-	var submitter order.OrderSubmitter = order.LogOnlySubmitter{}
+	// RecordingSubmitter로 감싸서, 성공적으로 "제출"된 주문은 recorder에도 남깁니다(FR-17).
+	recorder := order.NewInMemoryRecorder()
+	var submitter order.OrderSubmitter = order.RecordingSubmitter{Next: order.LogOnlySubmitter{}, Recorder: recorder}
+
+	// 주문 기록용 S3 버킷은 아직 없어서(인프라팀에 요청 중), 기본은 로컬 파일로 저장합니다.
+	// 버킷이 생기면 -order-bucket=team1-truss-order-records 처럼 이름만 넘기면 됩니다.
+	var orderStorage orderstore.Storage
+	if *orderBucket != "" {
+		orderStorage = orderstore.NewS3Storage(*orderBucket)
+	} else {
+		orderStorage = orderstore.NewLocalFileStorage("orders")
+	}
 
 	// 마켓별 상태를 미리 만들어둡니다 — 마켓별 알고리즘 봇(ReplayMarket 안)과
 	// 전체 조망형 AI 봇(RunGlobalBots)이 같은 MarketState를 공유해서 봅니다.
@@ -73,6 +89,22 @@ func main() {
 	wg.Wait()
 	cancel()
 	globalWG.Wait()
+
+	// 마켓 재생 + 전체 조망형 봇이 전부 끝난 뒤 한 번에 기록을 저장합니다 — 전체 조망형
+	// 봇은 마켓 재생 순서와 무관하게 끝까지 돌기 때문에, 마켓 하나가 끝나자마자 저장하면
+	// 그 이후 전체 조망형 봇이 그 마켓에 낸 주문을 놓칠 수 있습니다.
+	for _, entry := range manifest.Markets {
+		orders := recorder.Snapshot(entry.Market)
+		if len(orders) == 0 {
+			continue
+		}
+		path, err := orderStorage.Save(entry.Market, start, end, orders)
+		if err != nil {
+			log.Printf("[%s] 주문 기록 저장 실패: %v", entry.Market, err)
+			continue
+		}
+		log.Printf("[%s] 주문 기록 저장 완료 (%d건) -> %s", entry.Market, len(orders), path)
+	}
 
 	if len(failed) > 0 {
 		log.Printf("전체 재생 완료 — 실패한 마켓(%d개): %v", len(failed), failed)
