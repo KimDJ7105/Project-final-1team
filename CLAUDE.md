@@ -19,6 +19,7 @@ cd backend
 go build ./...        # build everything
 go run .               # starts the HTTP server (see backend/main.go); POST /v1/collect triggers a collection
 go vet ./...
+go test ./...
 go mod tidy
 ```
 
@@ -26,9 +27,16 @@ go mod tidy
 cd trader
 go build ./...
 go run . -backend=http://localhost:8080 -date=2026-07-27 -speed=60   # replays one day against a running backend
+go test ./...
 ```
 
-No test files exist yet in this repo (in either module).
+### Tests
+
+Both modules have `_test.go` files now (table-driven, stdlib `testing` only — no external test/mock libraries). Convention: tests live beside the code they cover, same package (white-box, so unexported helpers like `order.tickTier` are reachable), `TestXxx` names, `t.Run` subtests for table cases. `go test` (and everything else that isn't `go build`/`go run`) automatically excludes `_test.go` files from the compiled binary — that's a Go toolchain guarantee based on the filename suffix, not something this project configures.
+
+What's covered and why: pure/deterministic logic that's easy to get subtly wrong — `order.RoundToTick` (tick-size table + rounding), `bot.MarketState`'s circular buffer (wraparound indexing), `MarketMakerBot.Decide`, `dataset.BuildBatch`/`BuildStream` (Upbit field → normalized field mapping, event merge+sort), `dataset.localStorage` save/load round-trip, and `backend`'s `manifestHandler`/`fileHandler` (via an in-memory fake `dataset.Storage` in `server_test.go`, and — since `fileHandler`'s `r.PathValue()` only populates when matched through a real `http.ServeMux`, not on a bare handler call — a small mux built in the test with the same route pattern as `main.go`).
+
+What's deliberately **not** covered, and why: anything whose real work is a live network/AWS call — `backend/upbit` (real Upbit REST calls), `dataset.s3Storage` (real S3), `collectMarket`/`collectAllMarkets`/`ensureMarketCollected` (wrap `upbit` calls, no injectable fetcher to substitute — would need a refactor to test meaningfully), `client.Fetch*`'s success path against a real backend. These stay verified by hand (spin up `go run .`, hit it with `curl`/`Invoke-RestMethod`/a real `trader` run) the same way they were before tests existed — see the git history in this repo for examples of that workflow (e.g. the concurrent batch+stream request that proved `ensureMarketCollected`'s dedup works). AI bot stubs (`MomentumAIBot`/`MeanReversionAIBot`) aren't tested either — there's no logic yet, just a `nil` return.
 
 ### Local Kafka for development
 
