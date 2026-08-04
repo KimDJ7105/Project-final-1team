@@ -9,21 +9,20 @@ import (
 	"time"
 )
 
-// bots는 한 마켓에서 항상 함께 도는 5종 봇입니다(FR-16).
-// 모멘텀/평균회귀는 AI(Bedrock) 연결 통로만 있는 스텁이라 지금은 주문을 내지 않습니다.
-func bots() []Bot {
+// marketBots는 한 마켓에서 항상 함께 도는, 마켓별로 독립적인 3종 알고리즘 봇입니다(FR-16).
+// 모멘텀/평균회귀(AI)는 마켓별이 아니라 전체 조망형이라 여기 없음 — globalbot.go 참고.
+func marketBots() []Bot {
 	return []Bot{
 		MarketMakerBot{},
 		NoiseBot{},
 		LargeOrderBot{},
-		MomentumAIBot{},
-		MeanReversionAIBot{},
 	}
 }
 
 // ReplayMarket은 한 마켓의 batch/stream을 받아와 이벤트를 ts 간격에 맞춰 순서대로 재생하면서,
-// 동시에 5종 봇을 각자의 판단 주기로 돌려 주문을 생성·제출합니다.
-func ReplayMarket(ctx context.Context, client *http.Client, baseURL string, entry ManifestEntry, speed float64, submitter OrderSubmitter) error {
+// 동시에 마켓별 알고리즘 봇 3종을 각자의 판단 주기로 돌려 주문을 생성·제출합니다.
+// state는 main.go가 미리 만들어 전체 조망형(global) 봇과 공유하는 것을 그대로 받습니다.
+func ReplayMarket(ctx context.Context, client *http.Client, baseURL string, entry ManifestEntry, speed float64, submitter OrderSubmitter, state *MarketState) error {
 	batch, err := FetchBatch(ctx, client, baseURL, entry.BatchURL)
 	if err != nil {
 		return fmt.Errorf("batch 조회 실패: %w", err)
@@ -41,14 +40,11 @@ func ReplayMarket(ctx context.Context, client *http.Client, baseURL string, entr
 	botCtx, cancelBots := context.WithCancel(ctx)
 	defer cancelBots()
 
-	state := &MarketState{}
 	var botWG sync.WaitGroup
-	for _, bot := range bots() {
-		botWG.Add(1)
-		go func(bot Bot) {
-			defer botWG.Done()
+	for _, bot := range marketBots() {
+		botWG.Go(func() {
 			runBot(botCtx, bot, entry.Market, state, speed, submitter)
-		}(bot)
+		})
 	}
 
 	var lastTS int64

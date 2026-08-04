@@ -21,10 +21,9 @@ func main() {
 		log.Fatalf("-date 형식이 올바르지 않습니다: %v", err)
 	}
 
-	ctx := context.Background()
 	client := NewHTTPClient()
 
-	manifest, err := FetchManifest(ctx, client, *backend, *date)
+	manifest, err := FetchManifest(context.Background(), client, *backend, *date)
 	if err != nil {
 		log.Fatalf("매니페스트 조회 실패: %v", err)
 	}
@@ -34,6 +33,21 @@ func main() {
 	// 구현체를 씁니다. API가 준비되면 같은 OrderSubmitter 인터페이스의 HTTP 구현체로 교체합니다.
 	var submitter OrderSubmitter = LogOnlySubmitter{}
 
+	// 마켓별 상태를 미리 만들어둡니다 — 마켓별 알고리즘 봇(ReplayMarket 안)과
+	// 전체 조망형 AI 봇(RunGlobalBots)이 같은 MarketState를 공유해서 봅니다.
+	states := make(map[string]*MarketState, len(manifest.Markets))
+	for _, entry := range manifest.Markets {
+		states[entry.Market] = NewMarketState(priceHistorySize)
+	}
+
+	// 전체 마켓 재생이 다 끝나면(아래 wg.Wait()) 전체 조망형 봇도 같이 멈춥니다.
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var globalWG sync.WaitGroup
+	globalWG.Go(func() {
+		RunGlobalBots(ctx, states, *speed, submitter)
+	})
+
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var failed []string
@@ -41,19 +55,19 @@ func main() {
 	// 마켓당 고루틴 1개, 전부 NewHTTPClient가 만든 단일 클라이언트를 공유합니다.
 	// 한 마켓의 실패가 다른 마켓 재생을 막지 않도록 에러는 로그로만 남기고 계속 진행합니다.
 	for _, entry := range manifest.Markets {
-		wg.Add(1)
-		go func(entry ManifestEntry) {
-			defer wg.Done()
-			if err := ReplayMarket(ctx, client, *backend, entry, *speed, submitter); err != nil {
+		wg.Go(func() {
+			if err := ReplayMarket(ctx, client, *backend, entry, *speed, submitter, states[entry.Market]); err != nil {
 				log.Printf("[%s] 재생 실패: %v", entry.Market, err)
 				mu.Lock()
 				failed = append(failed, entry.Market)
 				mu.Unlock()
 			}
-		}(entry)
+		})
 	}
 
 	wg.Wait()
+	cancel()
+	globalWG.Wait()
 
 	if len(failed) > 0 {
 		log.Printf("전체 재생 완료 — 실패한 마켓(%d개): %v", len(failed), failed)
