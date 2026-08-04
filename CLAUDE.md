@@ -88,7 +88,7 @@ Field names are normalized across both files (see mapping table below) instead o
 ```json
 {
   "market": "KRW-BTC",
-  "range": { "start": "2026-07-29T00:00:00Z", "end": "2026-07-30T00:00:00Z" },
+  "range": { "start": "2026-07-29T00:00:00+09:00", "end": "2026-07-30T00:00:00+09:00" },
   "candles": {
     "days":   [ { "ts": 1785283200000, "open": 0, "high": 0, "low": 0, "close": 0, "volume": 0 } ],
     "weeks":  [ ... ],
@@ -102,7 +102,7 @@ Field names are normalized across both files (see mapping table below) instead o
 ```json
 {
   "market": "KRW-BTC",
-  "range": { "start": "2026-07-29T00:00:00Z", "end": "2026-07-30T00:00:00Z" },
+  "range": { "start": "2026-07-29T00:00:00+09:00", "end": "2026-07-30T00:00:00+09:00" },
   "events": [
     { "type": "trade_tick",    "ts": 1785283200123, "price": 0, "volume": 0, "side": "BUY" },
     { "type": "candle_second", "ts": 1785283201000, "open": 0, "high": 0, "low": 0, "close": 0, "volume": 0 },
@@ -191,4 +191,8 @@ Simulation data is served via **both** pre-generated files and on-demand generat
 ## Conventions
 
 - Comments and log/print messages in this codebase are written in Korean; match that style when editing existing files in `backend/upbit` and `backend/kafka`.
-- Timestamps are handled in UTC throughout the `upbit` package (Upbit's API returns both UTC and KST fields; this codebase consistently parses/compares using the UTC ones).
+- **Date boundaries are KST (UTC+9), not UTC — decided.** Every `date=YYYY-MM-DD` the API accepts (`POST /v1/collect`, `GET /v1/markets/data`, `GET /v1/markets/{market}/{kind}`) means that KST calendar day, not the UTC one — a request for `2026-07-27` collects `2026-07-27T00:00:00+09:00` through the instant before `2026-07-28T00:00:00+09:00`. Upbit is a Korean exchange, and the team decided this reads more naturally than UTC-shifted-by-9-hours days. `upbit.KST` (`backend/upbit/ticks.go`) is the shared `*time.Location`, built via `time.FixedZone("KST", 9*60*60)` rather than `time.LoadLocation("Asia/Seoul")` — Korea has no DST so the fixed offset is always correct, and `FixedZone` has no dependency on the OS/container having the IANA tzdata database installed (`LoadLocation` would fail on minimal images like Alpine without the `tzdata` package). `backend/server.go`'s `parseDate` helper is the one place all three handlers parse the incoming date string, via `time.ParseInLocation(..., upbit.KST)`.
+  - **Two traps this hit while switching from UTC, worth knowing about**: (1) `upbit.FetchTradeTicksForDate` used to hardcode `time.UTC` when reconstructing its day boundary from `date.Year()/Month()/Day()` — discarding whatever `Location` the caller actually passed in. Fixed by using `date.Location()` instead of a hardcoded zone, so the function works correctly regardless of which zone callers use. (2) Its `daysAgo` calculation used `time.Now().UTC().Truncate(24 * time.Hour)` to find "today's start" — **`time.Time.Truncate` ignores `Location` entirely** (it rounds down against the absolute time since Go's zero time, which is UTC-aligned), so swapping in `.In(kst)` before `Truncate` would silently keep truncating to UTC midnight, not KST midnight. Fixed by reconstructing "today" the same way as `startOfDay` — `time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)` — never `Truncate` for a timezone-aware day boundary.
+  - `dataset`'s `formatFileTime` (file/S3 key timestamps, `local_storage.go`) and `toRange` (the JSON `range.start`/`range.end` fields, `build.go`) both display in KST too, for the same reason as the date boundaries — a file for `2026-07-27` should visibly read `20260727...`, not a UTC-shifted `20260726T150000...`. `formatFileTime`'s layout dropped the trailing `Z` (that specifically denotes UTC in ISO 8601 and would be wrong now); `toRange` still uses `time.RFC3339`, which renders the `+09:00` offset instead of `Z` — still fully valid, unambiguous RFC3339.
+  - `upbit/candles.go`'s `FetchCandlesInRange`/`FetchRecentCandles` needed **no changes** — they only ever compare absolute `time.Time` instants (cursor-based pagination), never reconstruct a calendar day from `Year()/Month()/Day()`, so they're correct regardless of which `Location` the `start`/`end` they're given came from. `trader/` also needed no changes — it only ever passes the `date` string through to the backend as-is.
+  - Verified end-to-end against real Upbit data: requesting `date=2026-08-02` produced a stream whose first event's `ts` converts to exactly `2026-08-02T00:00:00+09:00` and last event's `ts` to `2026-08-02T23:59:59+09:00`.
