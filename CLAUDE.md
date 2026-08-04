@@ -4,15 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-This is an **infrastructure load-testing project**, not a production trading system. The end goal: collect real historical market data from Upbit, feed it to a (not-yet-built) "trader" application that replays it as massive simulated trading traffic against the backend, and use that traffic to load-test the backend + infra. `backend/` currently only does the data-collection half; `frontend/` is a separate Vue/Vite app (see its own `frontend/README.md`) not yet wired to the backend.
+This is an **infrastructure load-testing project**, not a production trading system. The end goal: collect real historical market data from Upbit, feed it to a "trader" application that replays it as massive simulated trading traffic against the backend, and use that traffic to load-test the backend + infra. Three independent Go modules live in this repo: `backend/` (data collection + serving, see below), `trader/` (data-replay engine, see below), and eventually the order-matching/frontend pieces owned by other teammates. `frontend/` is a separate Vue/Vite app (see its own `frontend/README.md`) not yet wired to the backend.
 
-Backend service that collects cryptocurrency market data from the Upbit exchange (REST + websocket APIs) and is being wired up to publish that data to Kafka for downstream processing.
+`backend/` is the service that collects cryptocurrency market data from the Upbit exchange (REST + websocket APIs); Kafka wiring for this data was considered (see `backend/kafka/producer.go`) but **decided against** — see "Data flow" below for why.
 
 The repo is mid-migration (see recent commit history): the Kafka producer exists but is **not currently called from `main.go`** (it was wired once, hit errors, and was pulled back out — see commit history). `.env`/`godotenv`-based config loading (`backend/config`) *is* active — `config.Load()` is called from `main.go` and reads `APP_ENV`, `S3_BUCKET`, `PORT`. Expect to find work-in-progress wiring elsewhere — check `main.go` before assuming the Kafka producer is active.
 
 ## Commands
 
-All Go commands run from `backend/` (that's the Go module root — `go.mod` declares `module backend`).
+`backend/` and `trader/` are **separate Go modules** (each has its own `go.mod` — `module backend`, `module trader`), so `cd` into whichever one you're working on before running Go commands; there is no shared workspace file tying them together.
 
 ```
 cd backend
@@ -22,7 +22,13 @@ go vet ./...
 go mod tidy
 ```
 
-No test files exist yet in this repo.
+```
+cd trader
+go build ./...
+go run . -backend=http://localhost:8080 -date=2026-07-27 -speed=60   # replays one day against a running backend
+```
+
+No test files exist yet in this repo (in either module).
 
 ### Local Kafka for development
 
@@ -41,13 +47,14 @@ Brings up a single-node KRaft-mode Kafka broker (`apache/kafka:3.7.0`) on `local
 - **`backend/upbit/candles.go`** — REST client for Upbit's `/v1/candles/*` endpoints. `FetchCandlesInRange` paginates backwards in time (via the `to` cursor) to collect all candles in `[start, end)` for fine-grained units (seconds/minutes); `FetchRecentCandles` fetches the last N candles for coarse units (days/weeks/months) where a single page suffices. Both respect Upbit's ~10 req/sec rate limit with a 110ms sleep between paginated calls.
 - **`backend/upbit/ticks.go`** — REST client for `/v1/trades/ticks` (individual trade executions). Also paginates backwards using the `cursor` (last page's `sequential_id`). Upbit only allows querying trade ticks for the last 7 days; `FetchTradeTicksForDate` enforces that and errors otherwise.
 - **`backend/upbit/websocket.go`** — legacy real-time ticker client over Upbit's websocket API (`ConnectAndListen`), explicitly marked as legacy in a source comment. Not called from `main.go` currently; streams ticker updates onto a channel for a caller to consume.
-- **`backend/kafka/producer.go`** — thin wrapper (`Producer`) around `segmentio/kafka-go`'s `Writer`, JSON-marshals whatever struct is passed to `SendMessage` and publishes it keyed by string. Built to carry Upbit data (candles/ticks/ticker) onto a Kafka topic, but not yet invoked anywhere in `main.go`.
+- **`backend/kafka/producer.go`** — thin wrapper (`Producer`) around `segmentio/kafka-go`'s `Writer`, JSON-marshals whatever struct is passed to `SendMessage` and publishes it keyed by string. Originally built to carry Upbit data onto a Kafka topic; **not used** for that anymore (see Data flow below) and not invoked anywhere in `main.go`.
+- **`trader/`** — separate Go module (`module trader`, own `go.mod`), the data-replay engine described in `docs/market-data-api.md`. Basic form only: fetches and paces data, does **not** generate/submit orders yet (that's the next step, blocked on the order-acceptance API existing). `main.go` parses `-backend`/`-date`/`-speed` flags, fetches the manifest, then spawns one goroutine per market (`replay.go`'s `ReplayMarket`) sharing a single `*http.Client` (`client.go`'s `NewHTTPClient`, 5-minute timeout to tolerate on-demand collection latency on a cache miss). Each goroutine fetches its batch+stream, then walks `stream.Events` in order, sleeping `(events[i].ts - events[i-1].ts) / speed` between events before logging each one. One market's error is logged and collected into a failure summary at the end; it does not stop or cancel the others (plain `sync.WaitGroup`, deliberately not `errgroup` — `errgroup.WithContext` cancels sibling goroutines on the first error, which is exactly the propagation this design avoids). `trader/types.go` re-declares the JSON shapes backend returns (`Manifest`, `BatchFile`, `StreamFile`, ...) rather than importing `backend/dataset` — the two modules are meant to only ever talk over HTTP+JSON, never share Go types at compile time.
 
-### Data flow (intended, partially built)
+### Data flow
 
-Upbit REST/websocket (`upbit` package) → Go structs (`Candle`, `TradeTick`, `UpbitTicker`) → **JSON files persisted to AWS S3** → served to the trader app on request → Kafka (`kafka.Producer`, currently unused) carries backend/trader traffic once the trader app exists.
+Upbit REST/websocket (`upbit` package) → Go structs (`Candle`, `TradeTick`, `UpbitTicker`) → **JSON files persisted to AWS S3** → served to the trader app on request. **Decided: this path does not use Kafka** — `backend/kafka/producer.go` was originally built to carry Upbit data onto a Kafka topic (per an earlier draft in `docs/requirements.md`), but market data here is historical/finite/already-`ts`-sorted and has exactly one consumer per request, none of which benefit from Kafka's pub-sub/backpressure/ordered-live-stream strengths — so it stays unused for this path. (Kafka remains the right tool for the *separate* live order flow — `orders`/`executions` topics — once that subsystem exists.)
 
-The trader app is **pull-based**: it does not receive data automatically at startup. It requests simulation data for a period from the backend, and the backend responds with the JSON file(s) covering that period (read from S3). Both sides of this are now implemented — see [docs/market-data-api.md](docs/market-data-api.md) for the full spec and sequence diagram; summary: `POST /v1/collect` triggers collection, `GET /v1/markets/data?date=...` returns a manifest of URLs for all 40 files (20 markets × batch/stream), the trader fetches them individually/in parallel via `GET /v1/markets/{market}/{batch|stream}` — backend proxies file bytes, no S3 presigned URLs, so the trader never needs S3 credentials — and per-market replay pacing (walking `events` by `ts` gaps) happens entirely client-side in memory, decoupled from the HTTP download.
+The trader app is **pull-based and now exists** (`trader/`, see below): it does not receive data automatically at startup. It requests simulation data for a period from the backend, and the backend responds with the JSON file(s) covering that period (read from S3). See [docs/market-data-api.md](docs/market-data-api.md) for the full spec and sequence diagram; summary: `POST /v1/collect` triggers collection, `GET /v1/markets/data?date=...` returns a manifest of URLs for all 40 files (20 markets × batch/stream), the trader fetches them individually/in parallel via `GET /v1/markets/{market}/{batch|stream}` — backend proxies file bytes, no S3 presigned URLs, so the trader never needs S3 credentials — and per-market replay pacing (walking `events` by `ts` gaps) happens entirely client-side in memory, decoupled from the HTTP download.
 
 **Decided and implemented**: the on-demand-generation trigger (hybrid design above) belongs to the per-file GET handler, not the manifest — the manifest stays cheap/fast (no existence checks, no `dataset.Storage` access at all) and `GET /v1/markets/{market}/{batch|stream}` (`fileHandler`) checks whether its file exists and triggers `collectMarket` for just that one market if not. Since `collectMarket` produces both batch and stream together in one call, concurrent batch+stream requests for the same market+date are deduped via `ensureMarketCollected`'s `singleflight.Group` (see `collector.go`) rather than running `collectMarket` twice — verified by firing concurrent batch/stream requests for an uncollected date and confirming the collection log line appeared exactly once.
 
