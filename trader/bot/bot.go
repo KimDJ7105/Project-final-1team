@@ -1,13 +1,13 @@
-package main
+package bot
 
 import (
 	"sync"
 	"time"
 )
 
-// priceHistorySize는 MarketState가 원형 버퍼로 들고 있는 최근 가격 개수입니다.
+// PriceHistorySize는 MarketState가 원형 버퍼로 들고 있는 최근 가격 개수입니다.
 // 실측 없이 잡은 기본값 — 나중에 조정 대상입니다.
-const priceHistorySize = 30
+const PriceHistorySize = 30
 
 // Decision은 봇 하나가 한 판단 주기에 내린 결정입니다.
 type Decision struct {

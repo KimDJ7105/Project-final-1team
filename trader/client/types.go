@@ -1,4 +1,4 @@
-package main
+package client
 
 // 아래 타입들은 backend가 반환하는 JSON 응답을 그대로 옮긴 것입니다.
 // trader는 backend와 별도 Go 모듈이라 backend/dataset의 타입을 직접 import하지 않고,

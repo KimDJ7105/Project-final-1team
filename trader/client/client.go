@@ -1,4 +1,4 @@
-package main
+package client
 
 import (
 	"context"
@@ -17,34 +17,34 @@ func NewHTTPClient() *http.Client {
 }
 
 // FetchManifest는 GET /v1/markets/data?date=...를 호출합니다.
-func FetchManifest(ctx context.Context, client *http.Client, baseURL, date string) (Manifest, error) {
+func FetchManifest(ctx context.Context, httpClient *http.Client, baseURL, date string) (Manifest, error) {
 	u := fmt.Sprintf("%s/v1/markets/data?date=%s", baseURL, url.QueryEscape(date))
 	var m Manifest
-	err := fetchJSON(ctx, client, u, &m)
+	err := fetchJSON(ctx, httpClient, u, &m)
 	return m, err
 }
 
 // FetchBatch는 매니페스트가 돌려준 상대 경로(BatchURL)로 batch 파일을 받아옵니다.
-func FetchBatch(ctx context.Context, client *http.Client, baseURL, path string) (BatchFile, error) {
+func FetchBatch(ctx context.Context, httpClient *http.Client, baseURL, path string) (BatchFile, error) {
 	var b BatchFile
-	err := fetchJSON(ctx, client, baseURL+path, &b)
+	err := fetchJSON(ctx, httpClient, baseURL+path, &b)
 	return b, err
 }
 
 // FetchStream은 매니페스트가 돌려준 상대 경로(StreamURL)로 stream 파일을 받아옵니다.
-func FetchStream(ctx context.Context, client *http.Client, baseURL, path string) (StreamFile, error) {
+func FetchStream(ctx context.Context, httpClient *http.Client, baseURL, path string) (StreamFile, error) {
 	var s StreamFile
-	err := fetchJSON(ctx, client, baseURL+path, &s)
+	err := fetchJSON(ctx, httpClient, baseURL+path, &s)
 	return s, err
 }
 
-func fetchJSON(ctx context.Context, client *http.Client, target string, v any) error {
+func fetchJSON(ctx context.Context, httpClient *http.Client, target string, v any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return err
 	}
 
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}

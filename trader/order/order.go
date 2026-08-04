@@ -1,9 +1,11 @@
-package main
+package order
 
 import (
 	"context"
 	"log"
 	"strconv"
+
+	"trader/bot"
 )
 
 // Order는 Decision을 실제 주문 형태로 바꾼 것입니다.
@@ -16,12 +18,15 @@ type Order struct {
 	Quantity string
 }
 
-// NewOrder는 한 마켓의 Decision을 Order로 변환합니다.
-func NewOrder(market string, d Decision) Order {
+// NewOrder는 한 마켓의 Decision을 Order로 변환합니다. 가격은 RoundToTick으로 마켓 호가
+// 단위의 배수로 스냅합니다 — 그래야 나중에 실제 주문 API에 붙였을 때 INVALID_PRICE_UNIT으로
+// 거부되지 않습니다(봇은 스프레드 계산 등으로 임의의 실수 가격을 만들어내므로 이 보정이 필요).
+func NewOrder(market string, d bot.Decision) Order {
+	price, decimals := RoundToTick(d.Price)
 	return Order{
 		Market:   market,
 		Side:     d.Side,
-		Price:    strconv.FormatFloat(d.Price, 'f', -1, 64),
+		Price:    strconv.FormatFloat(price, 'f', decimals, 64),
 		Quantity: strconv.FormatFloat(d.Quantity, 'f', -1, 64),
 	}
 }

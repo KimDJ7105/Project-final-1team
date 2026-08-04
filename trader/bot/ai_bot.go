@@ -1,4 +1,4 @@
-package main
+package bot
 
 import "time"
 
@@ -23,7 +23,7 @@ func (MomentumAIBot) Decide(states map[string]*MarketState) []GlobalDecision {
 	// TODO: AWS Bedrock 호출 — states의 마켓마다 MarketState.History()로 최근 가격
 	// 흐름을 뽑아 한 프롬프트에 담아 보내고, 상승세인 마켓이 있으면 매수 판단을 받아온다.
 	// 배속(speed)과 실제 Bedrock 응답 지연이 안 맞는 문제는 아직 미해결 — 연동 시점에
-	// runGlobalBot의 티커 계산 방식을 다시 봐야 한다 (globalbot.go 주석 참고).
+	// replay 패키지의 티커 계산 방식을 다시 봐야 한다 (replay/globalbot.go 주석 참고).
 	return nil
 }
 
