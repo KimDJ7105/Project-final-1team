@@ -30,6 +30,10 @@ func main() {
 	}
 	log.Printf("매니페스트 수신: %d개 마켓", len(manifest.Markets))
 
+	// 주문 접수 API(POST /v1/orders)가 준비됐는지 아직 모르므로, 지금은 로그만 남기는
+	// 구현체를 씁니다. API가 준비되면 같은 OrderSubmitter 인터페이스의 HTTP 구현체로 교체합니다.
+	var submitter OrderSubmitter = LogOnlySubmitter{}
+
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var failed []string
@@ -40,7 +44,7 @@ func main() {
 		wg.Add(1)
 		go func(entry ManifestEntry) {
 			defer wg.Done()
-			if err := ReplayMarket(ctx, client, *backend, entry, *speed); err != nil {
+			if err := ReplayMarket(ctx, client, *backend, entry, *speed, submitter); err != nil {
 				log.Printf("[%s] 재생 실패: %v", entry.Market, err)
 				mu.Lock()
 				failed = append(failed, entry.Market)
