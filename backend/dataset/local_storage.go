@@ -28,14 +28,23 @@ func (s *localStorage) SaveStream(st StreamFile, start, end time.Time) (string, 
 	return s.writeJSON(st, st.Market, start, end, "stream")
 }
 
+func (s *localStorage) LoadBatch(market string, start, end time.Time) (BatchFile, error) {
+	var b BatchFile
+	err := s.readJSON(market, start, end, "batch", &b)
+	return b, err
+}
+
+func (s *localStorage) LoadStream(market string, start, end time.Time) (StreamFile, error) {
+	var st StreamFile
+	err := s.readJSON(market, start, end, "stream", &st)
+	return st, err
+}
+
 func (s *localStorage) writeJSON(v any, market string, start, end time.Time, kind string) (string, error) {
-	dir := filepath.Join(s.root, market)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	path := s.filePath(market, start, end, kind)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return "", fmt.Errorf("디렉터리 생성 실패: %w", err)
 	}
-
-	filename := fmt.Sprintf("%s_%s_%s.json", formatFileTime(start), formatFileTime(end), kind)
-	path := filepath.Join(dir, filename)
 
 	bytes, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -47,6 +56,30 @@ func (s *localStorage) writeJSON(v any, market string, start, end time.Time, kin
 	}
 
 	return path, nil
+}
+
+func (s *localStorage) readJSON(market string, start, end time.Time, kind string, v any) error {
+	path := s.filePath(market, start, end, kind)
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("파일 읽기 실패: %w", err)
+	}
+
+	if err := json.Unmarshal(raw, v); err != nil {
+		return fmt.Errorf("JSON 파싱 실패: %w", err)
+	}
+
+	return nil
+}
+
+// filePath는 SaveXxx/LoadXxx가 공유하는 경로 생성 규칙입니다.
+func (s *localStorage) filePath(market string, start, end time.Time, kind string) string {
+	filename := fmt.Sprintf("%s_%s_%s.json", formatFileTime(start), formatFileTime(end), kind)
+	return filepath.Join(s.root, market, filename)
 }
 
 // formatFileTime은 파일명에 안전한(콜론 없는) 시각 포맷을 반환합니다.

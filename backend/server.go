@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"backend/dataset"
@@ -89,6 +91,58 @@ func manifestHandler() http.HandlerFunc {
 
 		writeJSON(w, http.StatusOK, manifestResponse{Date: date, Markets: markets})
 	}
+}
+
+// fileHandler는 저장된 market의 batch/stream 파일 내용을 그대로 서빙합니다.
+// 파일이 아직 없으면 해당 마켓만 온디맨드로 수집한 뒤 서빙합니다(하이브리드 생성 설계).
+func fileHandler(storage dataset.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		market := r.PathValue("market")
+		kind := r.PathValue("kind")
+
+		if kind != "batch" && kind != "stream" {
+			writeJSONError(w, http.StatusBadRequest, "kind는 batch 또는 stream이어야 합니다")
+			return
+		}
+		if !isTargetMarket(market) {
+			writeJSONError(w, http.StatusNotFound, "지원하지 않는 마켓입니다")
+			return
+		}
+
+		start, err := time.Parse("2006-01-02", r.URL.Query().Get("date"))
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "date는 YYYY-MM-DD 형식이어야 합니다")
+			return
+		}
+		start = start.UTC()
+		end := start.Add(24 * time.Hour)
+
+		file, err := loadFile(storage, market, kind, start, end)
+		if errors.Is(err, dataset.ErrNotFound) {
+			if err := ensureMarketCollected(storage, market, start, end); err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "데이터 수집 실패: "+err.Error())
+				return
+			}
+			file, err = loadFile(storage, market, kind, start, end)
+		}
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "파일 읽기 실패: "+err.Error())
+			return
+		}
+
+		writeJSON(w, http.StatusOK, file)
+	}
+}
+
+func loadFile(storage dataset.Storage, market, kind string, start, end time.Time) (any, error) {
+	if kind == "batch" {
+		return storage.LoadBatch(market, start, end)
+	}
+	return storage.LoadStream(market, start, end)
+}
+
+func isTargetMarket(market string) bool {
+	return slices.Contains(upbit.TargetMarkets, market)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

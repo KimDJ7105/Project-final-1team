@@ -5,9 +5,26 @@ import (
 	"log"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"backend/dataset"
 	"backend/upbit"
 )
+
+// onDemandCollect는 market+date 단위로 collectMarket 중복 실행을 막습니다.
+// 같은 마켓의 batch/stream이 거의 동시에 요청되면(둘 다 파일이 없는 경우) 한 번만 수집하고
+// 결과를 공유합니다 — collectMarket이 batch/stream을 항상 함께 만들기 때문입니다.
+var onDemandCollect singleflight.Group
+
+// ensureMarketCollected는 market+[start, end) 데이터가 storage에 없을 때만 온디맨드로 수집합니다.
+func ensureMarketCollected(storage dataset.Storage, market string, start, end time.Time) error {
+	key := market + "|" + start.Format(time.RFC3339)
+	_, err, _ := onDemandCollect.Do(key, func() (any, error) {
+		_, _, err := collectMarket(storage, market, start, end)
+		return nil, err
+	})
+	return err
+}
 
 // CollectResult는 마켓 하나에 대한 수집 결과입니다.
 type CollectResult struct {
