@@ -118,6 +118,7 @@ func acceptOrderHandler(store *OrderStore, idem *IdempotencyStore, producer Publ
 			return
 		}
 		store.Save(order)
+		log.Printf("주문 접수 완료 (market=%s, side=%s, orderId=%s)", order.Market, order.Side, order.OrderID)
 
 		body, _ := json.Marshal(order)
 		idem.Put(key, http.StatusAccepted, body)
@@ -153,9 +154,11 @@ func cancelOrderHandler(store *OrderStore, producer Publisher) http.HandlerFunc 
 			order.CanceledAt = nowISO()
 
 			if err := producer.PublishCancel(r.Context(), order.OrderID, order.Market); err != nil {
+				log.Printf("취소 발행 실패 (market=%s, orderId=%s): %v", order.Market, order.OrderID, err)
 				writeError(w, reqID, http.StatusInternalServerError, "INTERNAL_ERROR", "취소 발행에 실패했습니다.")
 				return
 			}
+			log.Printf("주문 취소 완료 (market=%s, orderId=%s)", order.Market, order.OrderID)
 		}
 
 		writeJSON(w, http.StatusOK, cancelResponse{
