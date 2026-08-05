@@ -8,9 +8,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"orderapi/idempotency"
+	"orderapi/kafkaclient"
+	"orderapi/order"
 )
 
-// fakePublisher는 실제 Kafka 없이 핸들러를 검증하기 위한 Publisher 구현체입니다.
+// fakePublisher는 실제 Kafka 없이 핸들러를 검증하기 위한 kafkaclient.Publisher 구현체입니다.
 type fakePublisher struct {
 	mu          sync.Mutex
 	newCalls    int
@@ -18,7 +22,7 @@ type fakePublisher struct {
 	failNext    bool
 }
 
-func (f *fakePublisher) PublishNew(ctx context.Context, o *Order) error {
+func (f *fakePublisher) PublishNew(ctx context.Context, o *order.Order) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failNext {
@@ -36,7 +40,7 @@ func (f *fakePublisher) PublishCancel(ctx context.Context, orderID, market strin
 	return nil
 }
 
-func newOrderMux(store *OrderStore, idem *IdempotencyStore, pub Publisher) *http.ServeMux {
+func newOrderMux(store *order.Store, idem *idempotency.Store, pub kafkaclient.Publisher) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/orders", acceptOrderHandler(store, idem, pub))
 	mux.HandleFunc("DELETE /v1/orders/{orderId}", cancelOrderHandler(store, pub))
@@ -54,7 +58,7 @@ func postOrder(mux *http.ServeMux, idempotencyKey, body string) *httptest.Respon
 }
 
 func TestAcceptOrderMissingIdempotencyKey(t *testing.T) {
-	mux := newOrderMux(NewOrderStore(), NewIdempotencyStore(), &fakePublisher{})
+	mux := newOrderMux(order.NewStore(), idempotency.NewStore(), &fakePublisher{})
 	rec := postOrder(mux, "", `{"market":"KRW-BTC","side":"BUY","price":"71500000","quantity":"0.015"}`)
 
 	if rec.Code != http.StatusBadRequest {
@@ -68,7 +72,7 @@ func TestAcceptOrderMissingIdempotencyKey(t *testing.T) {
 }
 
 func TestAcceptOrderInvalidMarket(t *testing.T) {
-	mux := newOrderMux(NewOrderStore(), NewIdempotencyStore(), &fakePublisher{})
+	mux := newOrderMux(order.NewStore(), idempotency.NewStore(), &fakePublisher{})
 	rec := postOrder(mux, "key-1", `{"market":"KRW-NOTREAL","side":"BUY","price":"100","quantity":"1"}`)
 
 	if rec.Code != http.StatusBadRequest {
@@ -83,15 +87,15 @@ func TestAcceptOrderInvalidMarket(t *testing.T) {
 
 func TestAcceptOrderSuccess(t *testing.T) {
 	pub := &fakePublisher{}
-	mux := newOrderMux(NewOrderStore(), NewIdempotencyStore(), pub)
+	mux := newOrderMux(order.NewStore(), idempotency.NewStore(), pub)
 	rec := postOrder(mux, "key-1", `{"market":"KRW-BTC","side":"BUY","price":"71500000","quantity":"0.015"}`)
 
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202, body=%s", rec.Code, rec.Body.String())
 	}
-	var got Order
+	var got order.Order
 	json.NewDecoder(rec.Body).Decode(&got)
-	if got.Status != StatusAccepted || got.Market != "KRW-BTC" || got.OrderID == "" {
+	if got.Status != order.StatusAccepted || got.Market != "KRW-BTC" || got.OrderID == "" {
 		t.Errorf("got = %+v", got)
 	}
 	if pub.newCalls != 1 {
@@ -101,7 +105,7 @@ func TestAcceptOrderSuccess(t *testing.T) {
 
 func TestAcceptOrderIdempotentRetryReturnsSameResponseWithoutRepublishing(t *testing.T) {
 	pub := &fakePublisher{}
-	mux := newOrderMux(NewOrderStore(), NewIdempotencyStore(), pub)
+	mux := newOrderMux(order.NewStore(), idempotency.NewStore(), pub)
 	body := `{"market":"KRW-BTC","side":"BUY","price":"71500000","quantity":"0.015"}`
 
 	first := postOrder(mux, "same-key", body)
@@ -117,8 +121,8 @@ func TestAcceptOrderIdempotentRetryReturnsSameResponseWithoutRepublishing(t *tes
 
 func TestAcceptOrderPublishFailureNotCachedAndAllowsRetry(t *testing.T) {
 	pub := &fakePublisher{failNext: true}
-	idem := NewIdempotencyStore()
-	mux := newOrderMux(NewOrderStore(), idem, pub)
+	idem := idempotency.NewStore()
+	mux := newOrderMux(order.NewStore(), idem, pub)
 	body := `{"market":"KRW-BTC","side":"BUY","price":"71500000","quantity":"0.015"}`
 
 	first := postOrder(mux, "retry-key", body)
@@ -133,7 +137,7 @@ func TestAcceptOrderPublishFailureNotCachedAndAllowsRetry(t *testing.T) {
 }
 
 func TestCancelOrderNotFound(t *testing.T) {
-	mux := newOrderMux(NewOrderStore(), NewIdempotencyStore(), &fakePublisher{})
+	mux := newOrderMux(order.NewStore(), idempotency.NewStore(), &fakePublisher{})
 	req := httptest.NewRequest(http.MethodDelete, "/v1/orders/ord_없음", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -144,10 +148,10 @@ func TestCancelOrderNotFound(t *testing.T) {
 }
 
 func TestCancelOrderSuccessThenIdempotentNoOp(t *testing.T) {
-	store := NewOrderStore()
-	store.Save(&Order{OrderID: "ord_1", Market: "KRW-BTC", Quantity: "0.015", Status: StatusAccepted})
+	store := order.NewStore()
+	store.Save(&order.Order{OrderID: "ord_1", Market: "KRW-BTC", Quantity: "0.015", Status: order.StatusAccepted})
 	pub := &fakePublisher{}
-	mux := newOrderMux(store, NewIdempotencyStore(), pub)
+	mux := newOrderMux(store, idempotency.NewStore(), pub)
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/orders/ord_1", nil)
 	rec := httptest.NewRecorder()
@@ -158,7 +162,7 @@ func TestCancelOrderSuccessThenIdempotentNoOp(t *testing.T) {
 	}
 	var got cancelResponse
 	json.NewDecoder(rec.Body).Decode(&got)
-	if got.Status != StatusCanceled || got.CanceledQuantity != "0.015" {
+	if got.Status != order.StatusCanceled || got.CanceledQuantity != "0.015" {
 		t.Errorf("got = %+v", got)
 	}
 	firstCanceledAt := got.CanceledAt
@@ -177,9 +181,9 @@ func TestCancelOrderSuccessThenIdempotentNoOp(t *testing.T) {
 }
 
 func TestCancelOrderAlreadyFilled(t *testing.T) {
-	store := NewOrderStore()
-	store.Save(&Order{OrderID: "ord_1", Market: "KRW-BTC", Status: StatusFilled})
-	mux := newOrderMux(store, NewIdempotencyStore(), &fakePublisher{})
+	store := order.NewStore()
+	store.Save(&order.Order{OrderID: "ord_1", Market: "KRW-BTC", Status: order.StatusFilled})
+	mux := newOrderMux(store, idempotency.NewStore(), &fakePublisher{})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/orders/ord_1", nil))

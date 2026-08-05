@@ -1,4 +1,5 @@
-package main
+// Package kafkaclient는 orderapi가 orders 토픽에 주문 이벤트를 발행하는 부분을 담당합니다.
+package kafkaclient
 
 import (
 	"context"
@@ -6,20 +7,22 @@ import (
 	"time"
 
 	kafka "github.com/segmentio/kafka-go"
+
+	"orderapi/order"
 )
 
 // Publisher는 주문 이벤트를 어딘가에 발행합니다. 핸들러는 이 인터페이스만 알고,
 // 실제 구현(OrderProducer)은 몰라도 됩니다 — 테스트에서는 실제 Kafka 없이
 // 가짜 구현체를 주입할 수 있습니다.
 type Publisher interface {
-	PublishNew(ctx context.Context, o *Order) error
+	PublishNew(ctx context.Context, o *order.Order) error
 	PublishCancel(ctx context.Context, orderID, market string) error
 }
 
 // OrderProducer는 주문 이벤트를 Kafka orders 토픽에 발행하는 Publisher 구현체입니다.
 //
 // backend/kafka/producer.go와 의도적으로 다른 점: 여기서는 &kafka.Hash{} 밸런서를
-// 씁니다. backend 쪽이 쓰는 &kafka.LeastBytes{}는 메시지 Key를 무시하고 파티션별
+// 씁니다. backend 쪽이 쓰던 &kafka.LeastBytes{}는 메시지 Key를 무시하고 파티션별
 // 누적 바이트량만으로 파티션을 고르는 전략이라 "같은 마켓은 항상 같은 파티션"
 // (FR-04, 순서 보장 NFR-07)을 보장하지 못합니다 — Hash는 Key의 해시로 파티션을
 // 정해서 같은 Key(마켓명)가 항상 같은 파티션에 가는 걸 보장합니다.
@@ -60,7 +63,7 @@ type orderEvent struct {
 
 // PublishNew는 신규 접수된 주문을 발행합니다. Key는 market — 같은 마켓 주문이
 // 항상 같은 파티션에 순서대로 쌓이게 합니다.
-func (p *OrderProducer) PublishNew(ctx context.Context, o *Order) error {
+func (p *OrderProducer) PublishNew(ctx context.Context, o *order.Order) error {
 	return p.publish(ctx, o.Market, orderEvent{
 		Type:       "NEW",
 		OrderID:    o.OrderID,
@@ -73,7 +76,7 @@ func (p *OrderProducer) PublishNew(ctx context.Context, o *Order) error {
 }
 
 // PublishCancel은 취소 이벤트를 발행합니다. 신규 주문과 같은 마켓 파티션에 실어서,
-// (나중에 매칭 엔진이 생기면) 신규/취소가 같은 마켓 안에서는 순서대로 처리되게 합니다.
+// 매칭 엔진이 같은 마켓 안에서는 신규/취소를 순서대로 처리하게 합니다.
 func (p *OrderProducer) PublishCancel(ctx context.Context, orderID, market string) error {
 	return p.publish(ctx, market, orderEvent{Type: "CANCEL", OrderID: orderID, Market: market})
 }

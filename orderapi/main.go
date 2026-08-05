@@ -5,14 +5,18 @@ import (
 	"net/http"
 
 	"github.com/redis/go-redis/v9"
+
+	"orderapi/idempotency"
+	"orderapi/kafkaclient"
+	"orderapi/order"
 )
 
 func main() {
 	cfg := LoadConfig()
 
-	store := NewOrderStore()
-	idem := NewIdempotencyStore()
-	producer := NewOrderProducer(cfg.KafkaBroker, cfg.OrdersTopic)
+	store := order.NewStore()
+	idem := idempotency.NewStore()
+	producer := kafkaclient.NewOrderProducer(cfg.KafkaBroker, cfg.OrdersTopic)
 	defer producer.Close()
 
 	redisClient := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})

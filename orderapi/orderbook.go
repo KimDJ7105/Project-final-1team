@@ -7,6 +7,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/shopspring/decimal"
+
+	"orderapi/validate"
 )
 
 // orderRestingView/orderbookDoc은 매칭 엔진(matching/snapshotstore/redis.go)이 Redis에
@@ -20,10 +22,10 @@ type orderRestingView struct {
 }
 
 type orderbookDoc struct {
-	Market string              `json:"market"`
-	Offset int64               `json:"offset"`
-	Bids   []orderRestingView  `json:"bids"`
-	Asks   []orderRestingView  `json:"asks"`
+	Market string             `json:"market"`
+	Offset int64              `json:"offset"`
+	Bids   []orderRestingView `json:"bids"`
+	Asks   []orderRestingView `json:"asks"`
 }
 
 // orderbookLevel/orderbookResponse는 docs/api-specification.md §3.1의 응답 형태입니다.
@@ -55,7 +57,7 @@ func orderbookHandler(redisClient *redis.Client) http.HandlerFunc {
 		w.Header().Set("X-Request-Id", reqID)
 
 		market := r.PathValue("market")
-		if !isTargetMarket(market) {
+		if !validate.IsTargetMarket(market) {
 			writeError(w, reqID, http.StatusNotFound, "MARKET_NOT_FOUND", "지원하지 않는 마켓입니다.")
 			return
 		}
