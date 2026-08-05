@@ -125,7 +125,7 @@ const isActive = (path) => route.path === path
             @click.prevent="go('/load-test/ai-trader')"
           >
             <span class="menu-dot"></span>
-            AI 트레이더
+            페이퍼 트레이딩
           </button>
         </div>
 
