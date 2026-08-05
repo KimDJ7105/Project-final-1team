@@ -15,11 +15,12 @@ import (
 )
 
 func main() {
-	backend := flag.String("backend", "http://localhost:8080", "백엔드 base URL")
 	date := flag.String("date", "", "재생할 날짜 (YYYY-MM-DD, 필수)")
 	speed := flag.Float64("speed", 60, "재생 배속 (이벤트 간 대기 시간을 이 값으로 나눔)")
 	orderBucket := flag.String("order-bucket", "", "주문 기록을 저장할 S3 버킷 (비어있으면 ./orders 로컬 디렉터리에 저장)")
 	flag.Parse()
+
+	cfg := LoadConfig()
 
 	if *date == "" {
 		log.Fatal("-date는 필수입니다 (YYYY-MM-DD)")
@@ -33,17 +34,19 @@ func main() {
 
 	httpClient := client.NewHTTPClient()
 
-	manifest, err := client.FetchManifest(context.Background(), httpClient, *backend, *date)
+	manifest, err := client.FetchManifest(context.Background(), httpClient, cfg.BackendURL, *date)
 	if err != nil {
 		log.Fatalf("매니페스트 조회 실패: %v", err)
 	}
 	log.Printf("매니페스트 수신: %d개 마켓", len(manifest.Markets))
 
-	// 주문 접수 API(POST /v1/orders)가 준비됐는지 아직 모르므로, 지금은 로그만 남기는
-	// 구현체를 씁니다. API가 준비되면 같은 OrderSubmitter 인터페이스의 HTTP 구현체로 교체합니다.
-	// RecordingSubmitter로 감싸서, 성공적으로 "제출"된 주문은 recorder에도 남깁니다(FR-17).
+	// 주문 접수 API(orderapi)에 실제로 POST /v1/orders를 보냅니다.
+	// RecordingSubmitter로 감싸서, 성공적으로 "제출"된(202 응답을 받은) 주문만 recorder에 남깁니다(FR-17).
 	recorder := order.NewInMemoryRecorder()
-	var submitter order.OrderSubmitter = order.RecordingSubmitter{Next: order.LogOnlySubmitter{}, Recorder: recorder}
+	var submitter order.OrderSubmitter = order.RecordingSubmitter{
+		Next:     order.HTTPOrderSubmitter{Client: httpClient, BaseURL: cfg.OrderAPIURL},
+		Recorder: recorder,
+	}
 
 	// 주문 기록용 S3 버킷은 아직 없어서(인프라팀에 요청 중), 기본은 로컬 파일로 저장합니다.
 	// 버킷이 생기면 -order-bucket=team1-truss-order-records 처럼 이름만 넘기면 됩니다.
@@ -77,7 +80,7 @@ func main() {
 	// 한 마켓의 실패가 다른 마켓 재생을 막지 않도록 에러는 로그로만 남기고 계속 진행합니다.
 	for _, entry := range manifest.Markets {
 		wg.Go(func() {
-			if err := replay.ReplayMarket(ctx, httpClient, *backend, entry, *speed, submitter, states[entry.Market]); err != nil {
+			if err := replay.ReplayMarket(ctx, httpClient, cfg.BackendURL, entry, *speed, submitter, states[entry.Market]); err != nil {
 				log.Printf("[%s] 재생 실패: %v", entry.Market, err)
 				mu.Lock()
 				failed = append(failed, entry.Market)
