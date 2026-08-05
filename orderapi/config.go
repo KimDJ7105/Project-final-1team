@@ -12,6 +12,7 @@ type Config struct {
 	Port        string
 	KafkaBroker string
 	OrdersTopic string
+	RedisAddr   string
 }
 
 // LoadConfig는 로컬의 .env 파일(있으면)을 읽어들인 뒤, 환경변수 기반 설정을 반환합니다.
@@ -45,5 +46,12 @@ func LoadConfig() Config {
 		topic = "orders"
 	}
 
-	return Config{Port: port, KafkaBroker: broker, OrdersTopic: topic}
+	// 호가창 조회(GET /v1/markets/{market}/orderbook, FR-12)가 매칭 엔진이 써둔 Redis
+	// 스냅샷을 읽으므로, KAFKA_BROKER와 같은 이유로 REDIS_ADDR도 필수로 요구합니다.
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		log.Fatal("REDIS_ADDR 환경변수가 필요합니다.")
+	}
+
+	return Config{Port: port, KafkaBroker: broker, OrdersTopic: topic, RedisAddr: redisAddr}
 }
