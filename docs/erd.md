@@ -3,6 +3,8 @@
 ## 변경 이력
 | 날짜 | 변경 내용 |
 |---|---|
+| 2026-08-06(2차) | 스키마 정리: `TRADER_BOT`/`REPLAY_ENGINE_MARKET` 제거, `MARKET.frequency_group` 제거, `TRADE_ORDER.status` 값을 실제 코드(`orderapi/order/order.go`)와 일치시킴(`OPEN`→`ACCEPTED`, `CANCELLED`→`CANCELED`). `TRADE_ORDER.client_request_id`는 `orderapi`가 Kafka `orders` 토픽 메시지에 `clientRequestId` 필드로 실어 보내도록 코드를 바꿔 채울 수 있게 함(`orderapi/kafkaclient/kafkaclient.go`). `MATCHING_ENGINE_ASSIGNMENT`는 FR-11이 실제로 구현·검증됐으므로 "빈 테이블" 메모를 갱신. `REPLAY_SESSION` 관련 세션 격리 문제는 결론 없이 계속 검토 중으로 남김 |
+| 2026-08-06(1차) | `orderapi`/`matching`/`trader`/`replayengine` 실제 구현과 대조해 "지금 채울 방법이 없는" 테이블/컬럼을 5장에 정리(스키마 변경 아님, 발견 사항만 기록) |
 | 2026-07-31 | requirements.md(1장·2장) 기준으로 ERD 최초 작성 |
 
 ## 1. 설계 범위
@@ -20,7 +22,7 @@
 | 페이퍼 트레이딩 주문 기록 파일 | S3 | 리플레이 입력 파일(FR-17), 파일 형태로 저장 |
 | TPS·컨슈머 랙·응답시간 등 운영 지표, 로그 | 모니터링 스택(Prometheus 등) | 시계열 지표, RDS 대상 아님(FR-21, NFR-16) |
 
-이 ERD가 다루는 것은 **주문·체결·봇·리플레이 실행·엔진 배정**이며, 근거 요구사항은 FR-01\~04(주문), FR-05\~11(매칭·재분배), FR-13(거래 내역 조회), FR-16(트레이더 봇), FR-17\~19(주문 기록·리플레이·분산 실행)이다.
+이 ERD가 다루는 것은 **주문·체결·리플레이 실행·엔진 배정**이며, 근거 요구사항은 FR-01\~04(주문), FR-05\~11(매칭·재분배), FR-13(거래 내역 조회), FR-17\~19(주문 기록·리플레이·분산 실행)이다. (트레이더 봇(FR-16)은 봇별 DB 테이블이 아니라 로그/모니터링 스택으로 다루기로 했다 — 4장 참고.)
 
 ## 2. ER 다이어그램
 
@@ -28,13 +30,9 @@
 erDiagram
     MARKET ||--o{ TRADE_ORDER : "주문 발생"
     MARKET ||--o{ EXECUTION : "체결 발생"
-    MARKET ||--o{ REPLAY_ENGINE_MARKET : "리플레이 대상"
     MARKET ||--o{ MATCHING_ENGINE_ASSIGNMENT : "매칭 엔진 담당"
 
-    TRADER_BOT ||--o{ TRADE_ORDER : "봇이 생성(페이퍼 트레이딩)"
-
     REPLAY_SESSION ||--o{ TRADE_ORDER : "세션에서 재생"
-    REPLAY_SESSION ||--o{ REPLAY_ENGINE_MARKET : "마켓별 엔진 배정"
 
     TRADE_ORDER ||--o{ EXECUTION : "매수측 체결"
     TRADE_ORDER ||--o{ EXECUTION : "매도측 체결"
@@ -44,14 +42,6 @@ erDiagram
         string market_code PK "예: KRW-BTC"
         string korean_name "한글명"
         string symbol "심볼"
-        string frequency_group "고빈도/중빈도/저빈도"
-    }
-
-    TRADER_BOT {
-        string bot_id PK
-        string bot_type "MARKET_MAKER/MOMENTUM/MEAN_REVERSION/NOISE/LARGE_ORDER"
-        string instance_name "봇 인스턴스 식별자"
-        datetime created_at
     }
 
     TRADE_ORDER {
@@ -62,13 +52,12 @@ erDiagram
         decimal price
         decimal quantity
         decimal remaining_quantity "미체결 잔량(FR-07)"
-        string status "OPEN/PARTIALLY_FILLED/FILLED/CANCELLED"
+        string status "ACCEPTED/PARTIALLY_FILLED/FILLED/CANCELED"
         string mode "PAPER_TRADING/REPLAY"
-        string bot_id FK "생성 봇, 페이퍼 트레이딩만 해당(nullable)"
         string replay_session_id FK "소속 리플레이 세션, 리플레이만 해당(nullable)"
         string source_order_id FK "리플레이 시 원본 페이퍼 주문(자기참조, nullable)"
         datetime submitted_at
-        datetime cancelled_at "취소 시각(nullable, FR-03/FR-10)"
+        datetime canceled_at "취소 시각(nullable, FR-03/FR-10)"
         datetime created_at
     }
 
@@ -93,16 +82,10 @@ erDiagram
         datetime ended_at
     }
 
-    REPLAY_ENGINE_MARKET {
-        string session_id PK, FK
-        string market_code PK, FK
-        int engine_instance_no "담당 리플레이 엔진 번호(FR-19)"
-    }
-
     MATCHING_ENGINE_ASSIGNMENT {
         string assignment_id PK
         string market_code FK
-        string engine_instance_id "매칭 엔진 Pod 식별자"
+        string engine_instance_id "매칭 엔진 인스턴스 식별자"
         datetime assigned_at
         datetime released_at "해제 시각(nullable, NULL이면 현재 담당 중, FR-11)"
     }
@@ -111,25 +94,19 @@ erDiagram
 ## 3. 엔티티 설명
 
 ### MARKET
-업비트 원화 마켓 20개 종목의 마스터 데이터(1.1.4). 신규 상장·상장폐지가 없는 고정 목록이므로 값이 자주 바뀌지 않는다.
-
-### TRADER_BOT
-FR-16의 5종 봇(마켓메이커/모멘텀추종/평균회귀/노이즈/대량 주문자) 인스턴스. 모니터링 화면의 "봇별 주문 현황"(FR-25) 집계 기준이 된다.
+업비트 원화 마켓 20개 종목의 마스터 데이터(1.1.4). 신규 상장·상장폐지가 없는 고정 목록이므로 값이 자주 바뀌지 않는다. `TRADE_ORDER`/`EXECUTION`/`MATCHING_ENGINE_ASSIGNMENT`의 `market_code` FK가 존재하지 않는 마켓 코드를 참조하지 못하게 막는 참조 무결성 목적이 크다.
 
 ### TRADE_ORDER
-접수 API가 처리하는 모든 주문. `mode`로 페이퍼 트레이딩/리플레이를 구분하고(FR-09), 리플레이 주문은 `source_order_id`로 원본 페이퍼 트레이딩 주문을 참조해 "동일 파일 재생 시 총 주문 수·마켓별 비율 동일"(FR-18 검증)을 추적할 수 있게 한다. `client_request_id`는 중복 주문 방지(FR-02) 판별 키다.
+접수 API가 처리하는 모든 주문. `mode`로 페이퍼 트레이딩/리플레이를 구분하고(FR-09), 리플레이 주문은 `source_order_id`로 원본 페이퍼 트레이딩 주문을 참조해 "동일 파일 재생 시 총 주문 수·마켓별 비율 동일"(FR-18 검증)을 추적할 수 있게 한다. `client_request_id`는 중복 주문 방지(FR-02) 판별 키다. `status` 값은 `docs/api-specification.md`가 정의하고 `orderapi/order/order.go`가 실제로 쓰는 상수(`ACCEPTED`/`PARTIALLY_FILLED`/`FILLED`/`CANCELED`)와 정확히 일치시켰다 — 이전 초안의 `OPEN`/`CANCELLED`는 실제 코드에 없는 값이었다.
 
 ### EXECUTION
 매칭 엔진이 체결한 결과(FR-06, FR-09). 매수·매도 주문 번호를 각각 참조해 "체결 결과의 매수·매도 주문 번호가 실제 체결 주문과 일치"(FR-09 검증)를 보장한다. 거래 내역 조회(FR-13)는 이 테이블을 최신순으로 조회한다.
 
 ### REPLAY_SESSION
-리플레이 1회 실행 단위(FR-18). 입력 파일, 배속, 분산 실행 시 사용한 엔진 대수를 기록해 재현 가능성을 확보한다.
-
-### REPLAY_ENGINE_MARKET
-리플레이 분산 실행 시(FR-19) 세션 내에서 마켓을 어떤 리플레이 엔진 인스턴스가 담당했는지 기록한다.
+리플레이 1회 실행 단위(FR-18). 입력 파일, 배속, 분산 실행 시 사용한 엔진 대수를 기록해 재현 가능성을 확보한다. 이 테이블이 실제로 채워지려면 `replayengine`이 실행마다 세션 ID를 발급하고 그 값을 주문 요청에 실어 보내는 배관이 먼저 필요하다 — 아직 결론 내리지 않은 사안이라 5장에서 계속 다룬다.
 
 ### MATCHING_ENGINE_ASSIGNMENT
-매칭 엔진 수 증감에 따른 마켓 재분배 이력(FR-11). "한 마켓은 항상 정확히 한 엔진만 담당"(1.2.2) 원칙을 `released_at IS NULL` 조건으로 검증할 수 있다.
+매칭 엔진 수 증감에 따른 마켓 재분배 이력(FR-11). "한 마켓은 항상 정확히 한 엔진만 담당"(1.2.2) 원칙을 `released_at IS NULL` 조건으로 검증할 수 있다. FR-11은 이제 실제로 구현·검증됐고(`matching/main.go`의 `marketRegistry.Acquire`/`Release`), 이 테이블이 기록해야 할 실제 배정/반납 이벤트가 런타임에 발생한다 — `REPLAY_ENGINE_MARKET`(제거됨, 4장 참고)과 달리 이 배정은 측정된 부하에 따라 동적으로 정해지므로 사후에 재계산할 수 없어서, 기록해둘 실질적인 가치가 있다.
 
 ## 4. 설계 근거 메모
 
@@ -137,3 +114,18 @@ FR-16의 5종 봇(마켓메이커/모멘텀추종/평균회귀/노이즈/대량 
 - **mode 컬럼(테이블 분리 대신)**: 페이퍼 트레이딩/리플레이 이력을 별도 테이블로 나누는 대신 `mode` 컬럼으로 구분했다. 두 모드 모두 동일한 컬럼 구조(마켓·가격·수량·상태)를 쓰고, FR-18 검증("동일 파일 재생 시 총 주문 수·마켓별 비율 동일")처럼 두 모드를 서로 비교하는 조회가 잦기 때문에 테이블을 나누면 비교 쿼리마다 UNION이 필요해진다.
 - **자기참조 source_order_id**: 리플레이는 "판단 로직 재실행 없이 그대로 재생"(1.1.2 용어 정의)하므로 리플레이 주문은 항상 페이퍼 트레이딩 원본 주문 하나에 대응한다. 이 관계를 표현하기 위해 TRADE_ORDER가 자기 자신을 참조한다.
 - **가격/수량 정밀도**: `price`, `quantity`는 암호화폐 특성상 소수점 자리수가 커 부동소수점 오차가 정합성 요구사항(NFR-07\~10)에 영향을 줄 수 있으므로 DECIMAL(NUMERIC) 타입을 전제로 했다.
+- **제거된 테이블/컬럼(2026-08-06)**:
+  - **`TRADER_BOT`, `TRADE_ORDER.bot_id`** — 채울 배관(주문에 "어떤 봇이 만들었는지" 실어 보낼 필드)이 없는 것과 별개로, 이 정보의 용도(FR-25 "봇별 주문 현황")가 애초에 RDS로 정규화할 성격이 아니라고 판단했다. 1장의 "범위 제외" 표가 TPS·컨슈머 랙 같은 운영 지표를 이미 모니터링 스택으로 뺀 것과 같은 이유 — 봇별 집계도 로그/모니터링 쪽에서 다루는 게 일관된다.
+  - **`REPLAY_ENGINE_MARKET`** — FR-19의 마켓 분산은 `replayengine`이 `i % shardCount == shardIndex`로 완전히 결정론적으로 계산한다(`CLAUDE.md`의 `replayengine/main.go` 설명 참고) — 중앙에서 내려주는 실제 배정 이벤트가 없고, `REPLAY_SESSION.engine_count`와 마켓 목록만 알면 언제든 재계산 가능해서 별도로 기록할 정보가 없다. `MATCHING_ENGINE_ASSIGNMENT`는 반대로 런타임에 측정된 부하로 동적으로 정해지는 배정(FR-11, LPT)이라 사후 재계산이 불가능하므로 남겨뒀다.
+  - **`MARKET.frequency_group`** — `requirements.md` 1.1.4의 종목 선정 근거 설명에만 쓰이고 실제 코드 어디에도 이 분류가 없어, 이 값을 실제로 참조하는 로직이 생기기 전까지는 순수 문서용 메타데이터를 컬럼으로 둘 이유가 약하다고 판단했다.
+- **`TRADE_ORDER.status` 값 수정** — 이전 초안의 `OPEN`/`CANCELLED`는 실제로 구현된 `docs/api-specification.md`/`orderapi/order/order.go`의 상수(`ACCEPTED`/`CANCELED`)와 다른 값이었다. ERD를 실제 API 계약에 맞춰 고쳤다(`cancelled_at`→`canceled_at`도 같은 이유).
+- **`TRADE_ORDER.client_request_id` 배관 추가** — 이전엔 `orderapi`의 Kafka `orders` 토픽 메시지에 `Idempotency-Key` 값이 실려 있지 않아 이 컬럼을 채울 방법이 없었다. `orderapi/kafkaclient/kafkaclient.go`의 `orderEvent`에 `clientRequestId` 필드를 추가하고, `Publisher.PublishNew`가 그 값을 받아 싣도록 고쳤다(`server.go`의 `acceptOrderHandler`가 이미 갖고 있던 `Idempotency-Key` 값을 그대로 전달) — `order.Order`(HTTP 응답 바디로도 나가는 구조체)에는 담지 않아 `docs/api-specification.md`의 응답 계약은 그대로다. 이제 "기록기"가 `orders` 토픽에서 이 값을 읽어 채울 수 있다.
+
+## 5. 남은 검토 사항 (실제 구현과 대조해 발견, 스키마는 아직 안 바꿈)
+
+`orderapi`(role A)·`matching`(role B)·`trader`·`replayengine`을 실제로 구현·검증해보니, 이 ERD가 전제하는 정보 중 일부가 **지금의 API 계약/코드로는 채울 방법이 없다.** 테이블/컬럼 자체가 잘못됐다기보다, 그 값을 만들어 넘겨주는 배관이 시스템 어디에도 아직 없다는 뜻이다 — 그래서 "삭제"가 아니라 "지금 당장은 못 채우는 것"으로 정리해둔다. (2026-08-06 논의로 `TRADER_BOT`/`REPLAY_ENGINE_MARKET`/`MARKET.frequency_group`/`MATCHING_ENGINE_ASSIGNMENT`/`client_request_id` 항목은 결론이 나서 4장으로 옮겼다 — 아래는 아직 결론이 안 난 것만 남았다.)
+
+- **`TRADE_ORDER.mode`(`PAPER_TRADING`/`REPLAY`) — 아직 미해결.** `docs/api-specification.md`의 `POST /v1/orders` 요청 바디(`{market,side,price,quantity}`)에 이 값을 실어보낼 필드가 없다. `orderapi`는 페이퍼 트레이딩 주문과 리플레이 주문을 **구분할 방법이 전혀 없이** 똑같이 받는다(`CLAUDE.md`의 `replayengine` 섹션에 이미 기록됨). role A의 요청 계약이 바뀌기 전까지는 이 컬럼을 채울 주체가 없다. `client_request_id`를 고친 것과 같은 방식(Kafka 메시지에 필드 추가)으로 풀 수 있어 보이지만, 아직 착수하지 않았다.
+- **`TRADE_ORDER.replay_session_id`, `TRADE_ORDER.source_order_id`, `REPLAY_SESSION` — 결론 없이 계속 검토 중.** 이 셋이 전제하는 "리플레이 세션"이라는 개념 자체가 지금 시스템에 없다. `replayengine`은 `-date`/`-shard-index` 같은 CLI 플래그로만 동작하고, 세션 ID를 발급하거나 API에 실어보내는 로직이 아예 없다(리플레이 한 번 실행 = 그냥 파일 읽어서 다시 제출하는 것 뿐). **관련해서 발견한 실제 문제**: 지금 상태로는 서로 다른 날짜를 재생하는 `replayengine`/`trader` 인스턴스 두 개를 동시에 돌리면, 둘 다 같은 마켓의 같은 매칭 엔진 호가창에 주문을 섞어 넣는다 — 세션 구분이 없어서 두 리플레이가 서로의 호가창을 오염시킨다. 이 테이블들을 채우는 배관(세션 ID 발급→요청에 실어보내기→role A가 받아 저장)이 이 오염 문제의 해결책과 겹쳐 보이긴 하지만, DB에 세션을 기록하는 것과 매칭 엔진의 실시간 호가창을 세션별로 실제로 격리하는 것은 서로 다른 문제라 — 후자는 `matching`/`orderapi` 쪽에 별도의 격리 메커니즘이 필요할 수 있다. 아직 이해와 설계가 덜 된 상태라 결론 내리지 않고 계속 검토한다.
+- **`TRADE_ORDER.remaining_quantity`** — 매칭 엔진(`matching/engine`)은 이 값을 Redis 스냅샷(개별 주문 잔량)에만 쓰고 있고, RDS에 쓰는 주체("기록기")가 아직 없다. 기록기가 생기면 `executions`를 누적해서 이 값을 스스로 재계산해야 하는지, 아니면 매칭 엔진이 직접 이 값을 별도로 발행해야 하는지 결정이 필요하다.
+- **`EXECUTION.mode`가 `TRADE_ORDER.mode`와 중복(비정규화)** — 매수/매도 양쪽 주문의 `mode`를 `EXECUTION`에도 다시 들고 있다. FR-13 조회 시 `TRADE_ORDER`까지 JOIN하지 않고 바로 필터링하려는 의도로 보이지만, 의도한 비정규화인지 그냥 남아있는 컬럼인지 재검토가 필요하다. 지금 시스템엔 한 체결의 매수/매도 양쪽이 서로 다른 `mode`일 수 없다는 보장도 없다 — `TRADE_ORDER.mode` 자체가 아직 못 채워지는 상태(위 항목)라 이 문제는 그 해결과 함께 다시 봐야 한다.
