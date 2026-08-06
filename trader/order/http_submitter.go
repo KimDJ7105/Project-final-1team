@@ -51,9 +51,14 @@ func (s HTTPOrderSubmitter) Submit(ctx context.Context, o Order) error {
 		return err
 	}
 	defer resp.Body.Close()
+	// 응답 바디를 끝까지 읽어야(성공이든 실패든) Go의 Transport가 이 커넥션을 재사용할
+	// 수 있습니다 — 다 안 읽고 Close만 하면 커넥션을 재사용 못 하고 매번 새로 열게
+	// 되는데, replayengine에서 이것 때문에 MaxIdleConnsPerHost를 키워도 Windows
+	// 아웃바운드 포트가 고갈되는 걸 실제로 겪었습니다(풀 크기만으로는 해결이 안 됐음 —
+	// 근본 원인은 재사용 자체가 안 되고 있었던 것이라, 여기도 같은 문제가 있었습니다).
+	respBody, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusAccepted {
-		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("주문 접수 실패 (status=%d): %s", resp.StatusCode, respBody)
 	}
 	return nil
