@@ -4,14 +4,22 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"sync"
 	"time"
 
 	"replayengine/orderstore"
+	"replayengine/session"
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	date := flag.String("date", "", "리플레이할 기록의 날짜 (YYYY-MM-DD, 필수 — trader가 그 -date로 기록한 세션)")
 	speed := flag.Float64("speed", 60, "재생 배속 (이벤트 간 대기 시간을 이 값으로 나눔)")
 	orderBucket := flag.String("order-bucket", "", "주문 기록을 읽어올 S3 버킷 (비어있으면 ./orders 로컬 디렉터리에서 읽음)")
@@ -22,10 +30,10 @@ func main() {
 	flag.Parse()
 
 	if *date == "" {
-		log.Fatal("-date는 필수입니다 (YYYY-MM-DD, trader가 기록할 때 쓴 날짜와 같아야 함)")
+		return fmt.Errorf("-date는 필수입니다 (YYYY-MM-DD, trader가 기록할 때 쓴 날짜와 같아야 함)")
 	}
 	if *shardCount < 1 || *shardIndex < 0 || *shardIndex >= *shardCount {
-		log.Fatalf("-shard-index(%d)는 0 이상 -shard-count(%d) 미만이어야 합니다", *shardIndex, *shardCount)
+		return fmt.Errorf("-shard-index(%d)는 0 이상 -shard-count(%d) 미만이어야 합니다", *shardIndex, *shardCount)
 	}
 
 	// trader/main.go와 동일하게 UTC 캘린더 일 기준으로 해석합니다 — trader가 기록
@@ -33,7 +41,7 @@ func main() {
 	// 같은 objectKey(=같은 파일 경로)를 가리킵니다.
 	start, err := time.Parse("2006-01-02", *date)
 	if err != nil {
-		log.Fatalf("-date 형식이 올바르지 않습니다: %v", err)
+		return fmt.Errorf("-date 형식이 올바르지 않습니다: %w", err)
 	}
 	start = start.UTC()
 	end := start.Add(24 * time.Hour)
@@ -49,6 +57,32 @@ func main() {
 
 	httpClient := NewHTTPClient()
 	submitter := HTTPOrderSubmitter{Client: httpClient, BaseURL: cfg.OrderAPIURL}
+
+	// 팀 결정(2026-08-06), trader/main.go와 같은 이유 — 두 개 이상의 트레이더/
+	// 리플레이 엔진이 동시에 실행되는 상황을 실행 시작 시점에 막는다. run()을
+	// 별도 함수로 뽑아낸 이유도 같다: log.Fatal이 defer(세션 반납)를 건너뛰지
+	// 않도록, 에러를 반환해 main()에서 마지막에 한 번만 처리한다.
+	sessionClient := session.Client{HTTPClient: httpClient, BaseURL: cfg.OrderAPIURL}
+	sessionID, ttlSeconds, err := sessionClient.Claim(context.Background(), "replayengine")
+	if err != nil {
+		return fmt.Errorf("세션 클레임 실패 — 트레이더/시뮬레이터는 동시에 하나만 실행할 수 있습니다: %w", err)
+	}
+	log.Printf("세션 클레임 완료 (sessionId=%s)", sessionID)
+
+	heartbeatCtx, stopHeartbeat := context.WithCancel(context.Background())
+	var heartbeatWG sync.WaitGroup
+	heartbeatWG.Go(func() {
+		session.RunHeartbeat(heartbeatCtx, sessionClient, sessionID, ttlSeconds)
+	})
+	defer func() {
+		stopHeartbeat()
+		heartbeatWG.Wait()
+		if err := sessionClient.Release(context.Background(), sessionID); err != nil {
+			log.Printf("세션 반납 실패 (sessionId=%s): %v", sessionID, err)
+		} else {
+			log.Printf("세션 반납 완료 (sessionId=%s)", sessionID)
+		}
+	}()
 
 	ctx := context.Background()
 	var wg sync.WaitGroup
@@ -86,4 +120,5 @@ func main() {
 
 	wg.Wait()
 	log.Print("전체 리플레이 완료")
+	return nil
 }
