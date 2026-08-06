@@ -21,11 +21,13 @@ type Publisher interface {
 
 // OrderProducer는 주문 이벤트를 Kafka orders 토픽에 발행하는 Publisher 구현체입니다.
 //
-// backend/kafka/producer.go와 의도적으로 다른 점: 여기서는 &kafka.Hash{} 밸런서를
-// 씁니다. backend 쪽이 쓰던 &kafka.LeastBytes{}는 메시지 Key를 무시하고 파티션별
-// 누적 바이트량만으로 파티션을 고르는 전략이라 "같은 마켓은 항상 같은 파티션"
-// (FR-04, 순서 보장 NFR-07)을 보장하지 못합니다 — Hash는 Key의 해시로 파티션을
-// 정해서 같은 Key(마켓명)가 항상 같은 파티션에 가는 걸 보장합니다.
+// backend/kafka/producer.go(삭제됨)가 쓰던 &kafka.LeastBytes{}는 메시지 Key를 무시하고
+// 파티션별 누적 바이트량만으로 파티션을 고르는 전략이라 "같은 마켓은 항상 같은 파티션"
+// (FR-04, 순서 보장 NFR-07)을 보장하지 못했습니다. 한동안 &kafka.Hash{}를 썼는데,
+// 이건 Key를 해시해서 파티션을 고르므로 "같은 마켓은 항상 같은 파티션"은 지켜지지만
+// 해시 충돌이 나면 "마켓 1개 = 파티션 1개"라는 더 강한 보장(FR-11 마켓 재분배가 전제)은
+// 못 지킵니다. 그래서 커스텀 marketPartitioner(balancer.go)로 교체 — 해시가 아니라
+// TargetMarkets 리스트에서의 인덱스를 그대로 파티션 번호로 씁니다.
 type OrderProducer struct {
 	writer *kafka.Writer
 }
@@ -36,7 +38,7 @@ func NewOrderProducer(broker, topic string) *OrderProducer {
 		writer: &kafka.Writer{
 			Addr:         kafka.TCP(broker),
 			Topic:        topic,
-			Balancer:     &kafka.Hash{},
+			Balancer:     marketPartitioner{},
 			BatchTimeout: 10 * time.Millisecond,
 			// 로컬 dev-kafka(KAFKA_AUTO_CREATE_TOPICS_ENABLE=true)에 맞춰 토픽이 없으면
 			// 자동 생성을 요청합니다. kafka-go의 기본값은 false라 브로커가 자동 생성을

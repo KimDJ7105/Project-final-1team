@@ -67,6 +67,12 @@ func (s *RedisStore) Save(_ context.Context, snap engine.Snapshot) error {
 	return nil
 }
 
+// Handoff는 Save와 달리 큐를 거치지 않고 즉시(동기적으로) 확정 저장합니다 —
+// engine.SnapshotStore의 설명 참고. 마켓을 다른 인스턴스에 넘겨줄 때만 씁니다.
+func (s *RedisStore) Handoff(ctx context.Context, snap engine.Snapshot) error {
+	return s.writeNow(ctx, snap)
+}
+
 func (s *RedisStore) writeNow(ctx context.Context, snap engine.Snapshot) error {
 	doc := snapshotDoc{
 		Market: snap.Market,

@@ -61,9 +61,19 @@ type Snapshot struct {
 // SnapshotStore는 스냅샷을 저장/로드합니다. engine은 이게 Redis인지, 어떻게
 // 비동기 처리되는지 몰라도 됩니다 — Save가 핫패스를 막지 않는 건 구현체(snapshotstore
 // 패키지)의 책임입니다.
+//
+// Save와 Handoff는 의도적으로 분리돼 있습니다 — Save는 비동기·유실 허용(평상시
+// FR-12 조회 신선도/FR-08 크래시 복구용, 큐가 차면 이번 스냅샷을 그냥 건너뜀).
+// Handoff는 동기·확정 저장이라, 이 마켓을 다른 인스턴스에 넘겨주기 직전에만 씁니다
+// (FR-11) — Save의 비동기 지연을 그대로 두면, 마켓을 넘겨받는 인스턴스가 Recover()할
+// 때 실제보다 몇 초 뒤처진 오프셋에서 시작해 그 사이 이벤트를 다시 매칭해 체결을
+// 중복 발행하게 됩니다. 크래시 복구(가끔 발생)에서는 감내할 지연이지만, 정상적인
+// 마켓 인계(리밸런스마다 발생)에서는 매번 재현되는 문제라 이 경로만 확정 저장이
+// 필요합니다.
 type SnapshotStore interface {
 	Load(ctx context.Context, market string) (Snapshot, bool, error)
 	Save(ctx context.Context, snap Snapshot) error
+	Handoff(ctx context.Context, snap Snapshot) error
 }
 
 // Engine은 마켓 하나를 담당합니다. 한 마켓은 고루틴 하나가 이 타입의 Apply를 순차
@@ -80,7 +90,13 @@ type Engine struct {
 
 	sinceSnapshot  int
 	lastSnapshotAt time.Time
-	lastOffset     int64
+	// lastOffset는 "마지막으로 처리한 이벤트의 offset"입니다. 아직 하나도 처리한 적이
+	// 없으면 -1입니다(0이 아님) — 0으로 두면 "offset 0을 이미 처리했다"와 구분이 안 돼서,
+	// 이벤트를 하나도 못 받은 마켓(예: 아직 주문이 없는 마켓)을 Handoff하면 다음
+	// 담당자가 resumeFrom=snap.Offset+1=1부터 읾어서 그 파티션에 실제로 처음 쓰이는
+	// offset 0 메시지를 영원히 건너뛰게 됩니다(실제 인스턴스 2개로 검증하다 발견함:
+	// 트래픽이 없던 마켓의 스냅샷이 {"offset":0, ...}으로 저장돼 있었음).
+	lastOffset int64
 }
 
 // New는 market을 담당하는 Engine을 만듭니다. snapshotEvery/snapshotInterval은
@@ -94,6 +110,7 @@ func New(market string, publisher ExecutionPublisher, snapshots SnapshotStore, s
 		snapshotEvery:    snapshotEvery,
 		snapshotInterval: snapshotInterval,
 		lastSnapshotAt:   time.Now(),
+		lastOffset:       -1,
 	}
 }
 
@@ -152,18 +169,33 @@ func (e *Engine) shouldSnapshot() bool {
 }
 
 func (e *Engine) snapshot(ctx context.Context) error {
-	snap := Snapshot{
-		Market: e.Market,
-		Offset: e.lastOffset,
-		Bids:   toOrderViews(e.book.AllOrders(orderbook.Buy)),
-		Asks:   toOrderViews(e.book.AllOrders(orderbook.Sell)),
-	}
-	if err := e.snapshots.Save(ctx, snap); err != nil {
+	if err := e.snapshots.Save(ctx, e.currentSnapshot()); err != nil {
 		return fmt.Errorf("스냅샷 저장 실패 (market=%s): %w", e.Market, err)
 	}
 	e.sinceSnapshot = 0
 	e.lastSnapshotAt = time.Now()
 	return nil
+}
+
+// Handoff는 이 마켓을 다른 인스턴스에 넘겨주기 직전에 호출합니다(FR-11) — 지금
+// 상태를 동기적으로 확정 저장해서, 다음 담당 인스턴스의 Recover()가 실제 마지막
+// 처리 지점부터 정확히 이어받게 합니다. 호출 전에 이 Engine으로의 Apply 호출이
+// 전부 끝나 있어야 합니다(호출부가 고루틴을 완전히 join한 뒤에 불러야 함) — 안
+// 그러면 저장하는 도중에도 상태가 계속 바뀌어 스냅샷이 일관되지 않을 수 있습니다.
+func (e *Engine) Handoff(ctx context.Context) error {
+	if err := e.snapshots.Handoff(ctx, e.currentSnapshot()); err != nil {
+		return fmt.Errorf("핸드오프 스냅샷 저장 실패 (market=%s): %w", e.Market, err)
+	}
+	return nil
+}
+
+func (e *Engine) currentSnapshot() Snapshot {
+	return Snapshot{
+		Market: e.Market,
+		Offset: e.lastOffset,
+		Bids:   toOrderViews(e.book.AllOrders(orderbook.Buy)),
+		Asks:   toOrderViews(e.book.AllOrders(orderbook.Sell)),
+	}
 }
 
 func toOrderViews(orders []*orderbook.Order) []OrderView {

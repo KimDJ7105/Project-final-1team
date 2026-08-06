@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/shopspring/decimal"
 	kafka "github.com/segmentio/kafka-go"
+	"github.com/shopspring/decimal"
 
 	"matching/engine"
 	"matching/orderbook"
@@ -27,56 +27,148 @@ type orderMessage struct {
 	Quantity string `json:"quantity,omitempty"`
 }
 
-// OrderReader는 orders 토픽을 항상 처음부터 읽습니다. Phase 1은 단일 인스턴스라 컨슈머
-// 그룹/파티션 재분배가 없고, "이 마켓은 어디까지 이미 처리됐는지"는 (여러 파티션에
-// 걸쳐 있을 수 있는 전체 스트림을 다시 훑는 대신) 각 엔진의 스냅샷 오프셋과 비교해
-// 호출부(main.go)가 건너뛰는 방식으로 처리합니다. 마켓별로 정확히 파티션을 나눠 그
-// 파티션만 seek하는 방식은 Phase 2(FR-11, ConsumerGroup 저수준 API)에서 다룹니다.
-type OrderReader struct {
-	reader *kafka.Reader
+// MarketLifecycle은 GroupConsumer가 파티션(=마켓)을 인수/처리/반납할 때 호출하는
+// 콜백입니다. matching/main.go가 이 인터페이스를 구현해 마켓별 Engine의 생명주기를
+// 관리합니다(map[market]*engine.Engine 등) — GroupConsumer 자신은 Engine을 모릅니다.
+type MarketLifecycle interface {
+	// Acquire는 이 마켓을 새로 담당하게 됐을 때 호출됩니다. 반환하는 offset부터
+	// 컨슘을 시작해야 합니다(FR-08과 동일한 Recover() 결과 — Kafka의 커밋 오프셋은
+	// 신뢰하지 않습니다).
+	Acquire(ctx context.Context, market string) (resumeFromOffset int64, err error)
+	// Apply는 이 마켓의 파티션에서 읽은 이벤트 하나를 처리합니다.
+	Apply(ctx context.Context, market string, ev engine.OrderEvent) error
+	// Release는 이 마켓을 다른 인스턴스에 넘겨주기 직전에 호출됩니다 — 구현체는
+	// engine.Engine.Handoff를 동기적으로 호출해 상태를 확정 저장해야 합니다.
+	Release(ctx context.Context, market string) error
 }
 
-func NewOrderReader(broker, topic string) *OrderReader {
-	return &OrderReader{
-		reader: kafka.NewReader(kafka.ReaderConfig{
-			Brokers:     []string{broker},
-			Topic:       topic,
-			StartOffset: kafka.FirstOffset,
-		}),
+// GroupConsumer는 kafka.ConsumerGroup으로 그룹 멤버십/제너레이션(리밸런스)만
+// 조정하고, 실제 메시지 읽기는 그룹 밖에서 파티션을 직접 구독하는 kafka.Reader로
+// 합니다(Partition/GroupID는 서로 배타적이라 GroupID를 비워야 합니다) — Kafka의
+// 컨슘 오프셋 커밋 메커니즘은 아예 쓰지 않고, 항상 MarketLifecycle.Acquire가
+// 돌려주는 우리 자체 Recover() 결과에서 SetOffset합니다. 이 조합(그룹은 멤버십용,
+// 실제 읽기는 그룹 밖)은 spike-consumergroup으로 사전에 실제 Kafka를 대상으로
+// 검증했습니다 — 조인/강제종료로 인한 리밸런스 양쪽 모두 (파티션, offset) 중복
+// 처리 0건.
+type GroupConsumer struct {
+	cg      *kafka.ConsumerGroup
+	broker  string
+	topic   string
+	markets []string // 인덱스 = 파티션 번호, orderapi의 marketPartitioner와 동일한 순서
+	life    MarketLifecycle
+}
+
+// NewGroupConsumer는 GroupConsumer를 만듭니다. groupID는 이 매칭 엔진 배포 전체가
+// 공유하는 고정값이어야 합니다(인스턴스별로 다르면 각자 자기 혼자만의 그룹에
+// 들어가서 재분배 자체가 일어나지 않습니다) — balancer는 matching/rebalance의
+// LoadAwareBalancer를 넘겨줍니다.
+func NewGroupConsumer(broker, groupID, topic string, balancer kafka.GroupBalancer, markets []string, life MarketLifecycle) (*GroupConsumer, error) {
+	cg, err := kafka.NewConsumerGroup(kafka.ConsumerGroupConfig{
+		ID:             groupID,
+		Brokers:        []string{broker},
+		Topics:         []string{topic},
+		GroupBalancers: []kafka.GroupBalancer{balancer},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("컨슈머 그룹 생성 실패: %w", err)
+	}
+	return &GroupConsumer{cg: cg, broker: broker, topic: topic, markets: markets, life: life}, nil
+}
+
+// Run은 제너레이션이 바뀔 때마다(=리밸런스) 이번 제너레이션에서 배정받은 파티션마다
+// 소비 고루틴을 하나씩 gen.Start로 띄웁니다. ctx가 취소되면 반환합니다.
+func (c *GroupConsumer) Run(ctx context.Context) error {
+	for {
+		gen, err := c.cg.Next(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("다음 제너레이션 획득 실패: %w", err)
+		}
+
+		assignments := gen.Assignments[c.topic]
+		log.Printf("[rebalance] 새 제너레이션(id=%d) 시작, 이 인스턴스 배정 파티션 %d개", gen.ID, len(assignments))
+
+		for _, assignment := range assignments {
+			partition := assignment.ID
+			market := c.markets[partition]
+			gen.Start(func(genCtx context.Context) {
+				c.consumePartition(genCtx, market, partition)
+			})
+		}
 	}
 }
 
-// Run은 메시지를 계속 읽어 handle에 넘깁니다. 파싱 실패나 handle의 에러는 로그만 남기고
-// 다음 메시지로 넘어갑니다 — 한 이벤트의 문제로 전체 컨슈밍이 멈추면 다른 마켓들까지
-// 영향받기 때문입니다(handle 쪽에서 실패한 마켓은 다음 스냅샷 시점까지만 뒤처지고,
-// 재기동하면 그 시점부터 다시 시도됩니다).
-func (r *OrderReader) Run(ctx context.Context, handle func(ctx context.Context, ev engine.OrderEvent) error) error {
+func (c *GroupConsumer) Close() error {
+	return c.cg.Close()
+}
+
+// consumePartition은 파티션 하나(=마켓 하나)를 이 제너레이션 동안 담당합니다.
+// genCtx가 끝나면(=다음 리밸런스로 이 파티션을 내줘야 함) 읽기를 멈추고 Release로
+// 상태를 확정 저장한 뒤에야 반환합니다 — gen.Start의 계약(모든 함수가 반환해야
+// 다음 제너레이션으로 넘어감)이 바로 "새 담당자가 인수하기 전에 이전 담당자가
+// 완전히 멈추고 확정 저장까지 끝낸다"는 보장을 대신 해줍니다.
+func (c *GroupConsumer) consumePartition(genCtx context.Context, market string, partition int) {
+	resumeFrom, err := c.life.Acquire(genCtx, market)
+	if err != nil {
+		log.Printf("[%s] 파티션 %d 인수 실패: %v", market, partition, err)
+		return
+	}
+	log.Printf("[%s] 파티션 %d 담당 시작 (offset %d부터)", market, partition, resumeFrom)
+
+	reader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:   []string{c.broker},
+		Topic:     c.topic,
+		Partition: partition,
+		GroupID:   "", // 컨슈머 그룹은 멤버십 조정에만 쓰고 실제 읽기는 그룹 밖에서 함
+	})
+	defer reader.Close()
+
+	if err := reader.SetOffset(resumeFrom); err != nil {
+		log.Printf("[%s] 파티션 %d SetOffset(%d) 실패: %v", market, partition, resumeFrom, err)
+	} else {
+		c.readLoop(genCtx, reader, market)
+	}
+
+	// genCtx가 끝났거나(정상적인 리밸런스) 읽기 루프가 에러로 빠져나온 경우 모두,
+	// 이 마켓을 더 이상 담당하지 않게 되는 것이므로 확정 저장은 항상 시도합니다.
+	// Handoff는 배경 컨텍스트로 호출합니다 — genCtx는 이미(또는 곧) 취소되므로
+	// 저장 자체가 취소되면 안 됩니다.
+	if err := c.life.Release(context.Background(), market); err != nil {
+		log.Printf("[%s] 파티션 %d 반납(핸드오프 저장) 실패: %v", market, partition, err)
+	} else {
+		log.Printf("[%s] 파티션 %d 담당 종료", market, partition)
+	}
+}
+
+func (c *GroupConsumer) readLoop(ctx context.Context, reader *kafka.Reader, market string) {
 	for {
-		msg, err := r.reader.ReadMessage(ctx)
+		msg, err := reader.ReadMessage(ctx)
 		if err != nil {
-			return fmt.Errorf("orders 토픽 읽기 실패: %w", err)
+			if ctx.Err() != nil {
+				return // 제너레이션 종료로 인한 정상적인 취소
+			}
+			log.Printf("[%s] orders 파티션 읽기 실패: %v", market, err)
+			return
 		}
 
 		var raw orderMessage
 		if err := json.Unmarshal(msg.Value, &raw); err != nil {
-			log.Printf("orders 메시지 파싱 실패, 건너뜀: %v", err)
+			log.Printf("[%s] orders 메시지 파싱 실패, 건너뜀: %v", market, err)
 			continue
 		}
 
 		ev, err := toOrderEvent(raw, msg.Offset)
 		if err != nil {
-			log.Printf("orders 메시지 변환 실패, 건너뜀 (market=%s, orderId=%s): %v", raw.Market, raw.OrderID, err)
+			log.Printf("[%s] orders 메시지 변환 실패, 건너뜀 (orderId=%s): %v", market, raw.OrderID, err)
 			continue
 		}
 
-		if err := handle(ctx, ev); err != nil {
-			log.Printf("이벤트 처리 실패 (market=%s, orderId=%s): %v", ev.Market, ev.OrderID, err)
+		if err := c.life.Apply(ctx, market, ev); err != nil {
+			log.Printf("[%s] 이벤트 처리 실패 (orderId=%s): %v", market, ev.OrderID, err)
 		}
 	}
-}
-
-func (r *OrderReader) Close() error {
-	return r.reader.Close()
 }
 
 func toOrderEvent(raw orderMessage, offset int64) (engine.OrderEvent, error) {
