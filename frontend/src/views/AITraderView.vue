@@ -199,7 +199,7 @@ const reset = () => {
             :disabled="collectionStatus === 'collecting'"
           />
           <p class="date-hint">
-            선택한 날짜의 UTC 00:00부터 다음 날 UTC 00:00까지 20개 마켓의 시세를 수집합니다.
+            선택한 날짜의 KST 00:00부터 다음 날 UTC 00:00까지 20개 마켓의 시세를 수집합니다.
           </p>
         </div>
 
