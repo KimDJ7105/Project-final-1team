@@ -113,7 +113,7 @@ func acceptOrderHandler(store *order.Store, idem *idempotency.Store, producer ka
 			AcceptedAt: nowISO(),
 		}
 
-		if err := producer.PublishNew(r.Context(), o); err != nil {
+		if err := producer.PublishNew(r.Context(), o, key); err != nil {
 			// Kafka 발행 실패는 일시적일 수 있어(브로커 재시작 등, 또는 토픽 자동 생성
 			// 중인 최초 1회 등) 멱등성 캐시에 남기지 않습니다 — 같은 키로 재시도하면
 			// 다시 시도할 수 있어야 합니다. 실제로 dev-kafka에서 토픽이 갓 생성될 때

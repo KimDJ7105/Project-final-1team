@@ -16,13 +16,14 @@ import (
 
 // fakePublisher는 실제 Kafka 없이 핸들러를 검증하기 위한 kafkaclient.Publisher 구현체입니다.
 type fakePublisher struct {
-	mu          sync.Mutex
-	newCalls    int
-	cancelCalls int
-	failNext    bool
+	mu                  sync.Mutex
+	newCalls            int
+	cancelCalls         int
+	failNext            bool
+	lastClientRequestID string
 }
 
-func (f *fakePublisher) PublishNew(ctx context.Context, o *order.Order) error {
+func (f *fakePublisher) PublishNew(ctx context.Context, o *order.Order, clientRequestID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failNext {
@@ -30,6 +31,7 @@ func (f *fakePublisher) PublishNew(ctx context.Context, o *order.Order) error {
 		return context.DeadlineExceeded
 	}
 	f.newCalls++
+	f.lastClientRequestID = clientRequestID
 	return nil
 }
 
@@ -100,6 +102,9 @@ func TestAcceptOrderSuccess(t *testing.T) {
 	}
 	if pub.newCalls != 1 {
 		t.Errorf("PublishNew 호출 횟수 = %d, want 1", pub.newCalls)
+	}
+	if pub.lastClientRequestID != "key-1" {
+		t.Errorf("PublishNew에 전달된 clientRequestID = %q, want %q (Idempotency-Key가 그대로 전달돼야 함)", pub.lastClientRequestID, "key-1")
 	}
 }
 

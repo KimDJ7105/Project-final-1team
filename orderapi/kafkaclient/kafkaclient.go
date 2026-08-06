@@ -15,7 +15,7 @@ import (
 // 실제 구현(OrderProducer)은 몰라도 됩니다 — 테스트에서는 실제 Kafka 없이
 // 가짜 구현체를 주입할 수 있습니다.
 type Publisher interface {
-	PublishNew(ctx context.Context, o *order.Order) error
+	PublishNew(ctx context.Context, o *order.Order, clientRequestID string) error
 	PublishCancel(ctx context.Context, orderID, market string) error
 }
 
@@ -53,27 +53,38 @@ func NewOrderProducer(broker, topic string) *OrderProducer {
 // orderEvent는 Kafka orders 토픽에 싣는 메시지 모양입니다. FR-22가 말하는
 // "별도의 Kafka 메시지 규격 문서"가 아직 없어 최소한의 모양으로 정한 것 —
 // 그 문서가 생기면 그쪽 기준으로 맞춰야 합니다(CLAUDE.md에 기록).
+//
+// ClientRequestID는 요청의 Idempotency-Key 값입니다. order.Order 자체(HTTP 응답
+// 바디로도 그대로 나가는 구조체)에는 담지 않고 이 메시지에만 실어 보냅니다 —
+// docs/api-specification.md가 정의한 응답 바디 계약을 건드리지 않으면서, 나중에
+// "기록기"가 orders 토픽을 구독해 TRADE_ORDER.client_request_id(docs/erd.md)를
+// 채울 수 있게 하려는 목적입니다. matching은 이 필드를 몰라도 되므로(자기 매칭
+// 로직에 안 씀) matching/kafkaclient의 디코더는 손대지 않았습니다 — 알지 못하는
+// JSON 필드는 그냥 무시됩니다.
 type orderEvent struct {
-	Type       string `json:"type"` // "NEW" | "CANCEL"
-	OrderID    string `json:"orderId"`
-	Market     string `json:"market"`
-	Side       string `json:"side,omitempty"`
-	Price      string `json:"price,omitempty"`
-	Quantity   string `json:"quantity,omitempty"`
-	AcceptedAt string `json:"acceptedAt,omitempty"`
+	Type            string `json:"type"` // "NEW" | "CANCEL"
+	OrderID         string `json:"orderId"`
+	Market          string `json:"market"`
+	Side            string `json:"side,omitempty"`
+	Price           string `json:"price,omitempty"`
+	Quantity        string `json:"quantity,omitempty"`
+	AcceptedAt      string `json:"acceptedAt,omitempty"`
+	ClientRequestID string `json:"clientRequestId,omitempty"`
 }
 
 // PublishNew는 신규 접수된 주문을 발행합니다. Key는 market — 같은 마켓 주문이
-// 항상 같은 파티션에 순서대로 쌓이게 합니다.
-func (p *OrderProducer) PublishNew(ctx context.Context, o *order.Order) error {
+// 항상 같은 파티션에 순서대로 쌓이게 합니다. clientRequestID는 요청의
+// Idempotency-Key 값을 그대로 전달받아 메시지에 싣습니다(위 orderEvent 설명 참고).
+func (p *OrderProducer) PublishNew(ctx context.Context, o *order.Order, clientRequestID string) error {
 	return p.publish(ctx, o.Market, orderEvent{
-		Type:       "NEW",
-		OrderID:    o.OrderID,
-		Market:     o.Market,
-		Side:       o.Side,
-		Price:      o.Price,
-		Quantity:   o.Quantity,
-		AcceptedAt: o.AcceptedAt,
+		Type:            "NEW",
+		OrderID:         o.OrderID,
+		Market:          o.Market,
+		Side:            o.Side,
+		Price:           o.Price,
+		Quantity:        o.Quantity,
+		AcceptedAt:      o.AcceptedAt,
+		ClientRequestID: clientRequestID,
 	})
 }
 
