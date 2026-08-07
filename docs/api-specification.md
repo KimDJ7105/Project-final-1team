@@ -53,6 +53,7 @@
 | `side` | string | Y | `BUY` \| `SELL` |
 | `price` | string | Y | 주문 가격(KRW). 마켓별 호가 단위(tick size)의 배수여야 함 |
 | `quantity` | string | Y | 주문 수량. 0보다 커야 함 |
+| `sourceOrderId` | string | N | 리플레이 주문만 사용 — 재생 중인 원본 페이퍼 트레이딩 주문의 `orderId`. 검증에는 관여하지 않고 그대로 Kafka `orders` 토픽에 실려 "기록기"가 `TRADE_ORDER.source_order_id`(docs/erd.md)를 채우는 데만 쓰인다. 신규(페이퍼 트레이딩) 주문은 이 필드를 보내지 않는다 |
 
 ```json
 {

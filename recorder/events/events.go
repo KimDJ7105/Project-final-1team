@@ -18,6 +18,7 @@ type orderEvent struct {
 	ClientRequestID string `json:"clientRequestId,omitempty"`
 	Mode            string `json:"mode,omitempty"`
 	CanceledAt      string `json:"canceledAt,omitempty"`
+	SourceOrderID   string `json:"sourceOrderId,omitempty"`
 }
 
 type executionMessage struct {
@@ -46,8 +47,9 @@ const (
 )
 
 // OrderEvent는 orders 토픽 메시지 하나를 기록기가 다루기 좋은 형태로 디코딩한
-// 것입니다. CANCEL 이벤트는 Side/Price/Quantity/AcceptedAt/ClientRequestID/Mode가
-// 비어 있습니다(원본 메시지에도 없음).
+// 것입니다. CANCEL 이벤트는 Side/Price/Quantity/AcceptedAt/ClientRequestID/Mode/
+// SourceOrderID가 비어 있습니다(원본 메시지에도 없음). NEW 이벤트도
+// SourceOrderID는 trader의 신규 주문이면 빈 문자열입니다(리플레이 주문만 값이 있음).
 type OrderEvent struct {
 	Type            EventType
 	OrderID         string
@@ -59,6 +61,7 @@ type OrderEvent struct {
 	ClientRequestID string
 	Mode            string
 	CanceledAt      string
+	SourceOrderID   string
 }
 
 // ExecutionEvent는 executions 토픽 메시지 하나를 디코딩한 것입니다.

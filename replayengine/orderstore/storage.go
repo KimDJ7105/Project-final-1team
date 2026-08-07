@@ -15,11 +15,15 @@ import (
 var ErrNotFound = errors.New("주문 기록 파일을 찾을 수 없음")
 
 // RecordedOrder는 trader/order.RecordedOrder와 필드가 정확히 같은 모양입니다.
+// OrderID는 원본 페이퍼 트레이딩 주문의 orderId — submitter.go가 리플레이 주문을
+// 다시 제출할 때 sourceOrderId로 실어 보내, 기록기가 TRADE_ORDER.source_order_id
+// (docs/erd.md)를 채울 수 있게 합니다.
 type RecordedOrder struct {
 	TS       int64  `json:"ts"`
 	Side     string `json:"side"`
 	Price    string `json:"price"`
 	Quantity string `json:"quantity"`
+	OrderID  string `json:"orderId"`
 }
 
 // Storage는 한 마켓의 기록된 주문들을 읽어오는 방법을 추상화합니다.

@@ -15,7 +15,7 @@ import (
 // 실제 구현(OrderProducer)은 몰라도 됩니다 — 테스트에서는 실제 Kafka 없이
 // 가짜 구현체를 주입할 수 있습니다.
 type Publisher interface {
-	PublishNew(ctx context.Context, o *order.Order, clientRequestID, mode string) error
+	PublishNew(ctx context.Context, o *order.Order, clientRequestID, mode, sourceOrderID string) error
 	PublishCancel(ctx context.Context, orderID, market, canceledAt string) error
 }
 
@@ -60,9 +60,12 @@ func NewOrderProducer(broker, topic string) *OrderProducer {
 // "기록기"가 orders 토픽을 구독해 TRADE_ORDER.client_request_id(docs/erd.md)를
 // 채울 수 있게 하려는 목적입니다. Mode(NEW만)/CanceledAt(CANCEL만)도 같은 이유로
 // 추가됐습니다 — TRADE_ORDER.mode/canceled_at을 기록기가 채울 수 있게 하는 배관.
-// matching은 이 필드들을 몰라도 되므로(자기 매칭 로직에 안 씀)
-// matching/kafkaclient의 디코더는 손대지 않았습니다 — 알지 못하는 JSON 필드는
-// 그냥 무시됩니다.
+// SourceOrderID(NEW만)도 같은 패턴 — replayengine이 요청 바디의 sourceOrderId로
+// 실어 보낸 원본 페이퍼 트레이딩 주문 번호를 그대로 옮겨, 기록기가
+// TRADE_ORDER.source_order_id를 채울 수 있게 합니다(trader의 신규 주문은 이
+// 필드가 항상 빈 문자열). matching은 이 필드들을 몰라도 되므로(자기 매칭
+// 로직에 안 씀) matching/kafkaclient의 디코더는 손대지 않았습니다 — 알지 못하는
+// JSON 필드는 그냥 무시됩니다.
 type orderEvent struct {
 	Type            string `json:"type"` // "NEW" | "CANCEL"
 	OrderID         string `json:"orderId"`
@@ -74,13 +77,15 @@ type orderEvent struct {
 	ClientRequestID string `json:"clientRequestId,omitempty"`
 	Mode            string `json:"mode,omitempty"`
 	CanceledAt      string `json:"canceledAt,omitempty"`
+	SourceOrderID   string `json:"sourceOrderId,omitempty"`
 }
 
 // PublishNew는 신규 접수된 주문을 발행합니다. Key는 market — 같은 마켓 주문이
 // 항상 같은 파티션에 순서대로 쌓이게 합니다. clientRequestID는 요청의
-// Idempotency-Key 값을, mode는 X-Order-Mode 헤더 값(PAPER_TRADING/REPLAY)을
-// 그대로 전달받아 메시지에 싣습니다(위 orderEvent 설명 참고).
-func (p *OrderProducer) PublishNew(ctx context.Context, o *order.Order, clientRequestID, mode string) error {
+// Idempotency-Key 값을, mode는 X-Order-Mode 헤더 값(PAPER_TRADING/REPLAY)을,
+// sourceOrderID는 요청 바디의 sourceOrderId(리플레이 주문만 값이 있음)를 그대로
+// 전달받아 메시지에 싣습니다(위 orderEvent 설명 참고).
+func (p *OrderProducer) PublishNew(ctx context.Context, o *order.Order, clientRequestID, mode, sourceOrderID string) error {
 	return p.publish(ctx, o.Market, orderEvent{
 		Type:            "NEW",
 		OrderID:         o.OrderID,
@@ -91,6 +96,7 @@ func (p *OrderProducer) PublishNew(ctx context.Context, o *order.Order, clientRe
 		AcceptedAt:      o.AcceptedAt,
 		ClientRequestID: clientRequestID,
 		Mode:            mode,
+		SourceOrderID:   sourceOrderID,
 	})
 }
 

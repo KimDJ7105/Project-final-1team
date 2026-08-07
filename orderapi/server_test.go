@@ -23,9 +23,10 @@ type fakePublisher struct {
 	lastClientRequestID string
 	lastMode            string
 	lastCanceledAt      string
+	lastSourceOrderID   string
 }
 
-func (f *fakePublisher) PublishNew(ctx context.Context, o *order.Order, clientRequestID, mode string) error {
+func (f *fakePublisher) PublishNew(ctx context.Context, o *order.Order, clientRequestID, mode, sourceOrderID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failNext {
@@ -35,6 +36,7 @@ func (f *fakePublisher) PublishNew(ctx context.Context, o *order.Order, clientRe
 	f.newCalls++
 	f.lastClientRequestID = clientRequestID
 	f.lastMode = mode
+	f.lastSourceOrderID = sourceOrderID
 	return nil
 }
 
@@ -126,6 +128,16 @@ func TestAcceptOrderModeHeaderPassedThrough(t *testing.T) {
 
 	if pub.lastMode != "REPLAY" {
 		t.Errorf("PublishNew에 전달된 mode = %q, want REPLAY", pub.lastMode)
+	}
+}
+
+func TestAcceptOrderSourceOrderIDPassedThrough(t *testing.T) {
+	pub := &fakePublisher{}
+	mux := newOrderMux(order.NewStore(), idempotency.NewStore(), pub)
+	postOrder(mux, "key-1", `{"market":"KRW-BTC","side":"BUY","price":"71500000","quantity":"0.015","sourceOrderId":"ord_20260806_0000001"}`)
+
+	if pub.lastSourceOrderID != "ord_20260806_0000001" {
+		t.Errorf("PublishNew에 전달된 sourceOrderID = %q, want ord_20260806_0000001", pub.lastSourceOrderID)
 	}
 }
 

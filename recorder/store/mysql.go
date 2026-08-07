@@ -49,9 +49,9 @@ func (s *MySQLStore) InsertOrder(ctx context.Context, o NewOrder) error {
 
 	_, err = s.db.ExecContext(ctx, `
 		INSERT IGNORE INTO trade_order
-			(order_id, client_request_id, market_code, side, price, quantity, remaining_quantity, status, mode, submitted_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'ACCEPTED', ?, ?)
-	`, o.OrderID, nullIfEmpty(o.ClientRequestID), o.Market, o.Side, o.Price, o.Quantity, o.Quantity, o.Mode, submittedAt)
+			(order_id, client_request_id, market_code, side, price, quantity, remaining_quantity, status, mode, submitted_at, source_order_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 'ACCEPTED', ?, ?, ?)
+	`, o.OrderID, nullIfEmpty(o.ClientRequestID), o.Market, o.Side, o.Price, o.Quantity, o.Quantity, o.Mode, submittedAt, nullIfEmpty(o.SourceOrderID))
 	if err != nil {
 		return fmt.Errorf("주문 저장 실패 (orderId=%s): %w", o.OrderID, err)
 	}

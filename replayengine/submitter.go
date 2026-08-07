@@ -30,11 +30,17 @@ func NewHTTPClient() *http.Client {
 }
 
 // orderRequest는 orderapi/server.go의 orderRequest와 필드가 정확히 대응됩니다.
+// SourceOrderID는 선택 필드(sourceOrderId) — trader가 FR-17 기록 파일에 남긴
+// 원본 주문 번호를 그대로 실어 보내면, orderapi가 이를 Kafka NEW 이벤트에 태워
+// 기록기가 TRADE_ORDER.source_order_id(docs/erd.md)를 채울 수 있습니다. 오래된
+// 기록 파일(OrderID 필드가 없던 시절)을 재생할 땐 빈 문자열이라 omitempty로
+// 아예 필드를 안 보냅니다.
 type orderRequest struct {
-	Market   string `json:"market"`
-	Side     string `json:"side"`
-	Price    string `json:"price"`
-	Quantity string `json:"quantity"`
+	Market        string `json:"market"`
+	Side          string `json:"side"`
+	Price         string `json:"price"`
+	Quantity      string `json:"quantity"`
+	SourceOrderID string `json:"sourceOrderId,omitempty"`
 }
 
 // HTTPOrderSubmitter는 기록된 주문을 그대로 orderapi에 다시 접수시킵니다(FR-18 —
@@ -48,10 +54,11 @@ type HTTPOrderSubmitter struct {
 
 func (s HTTPOrderSubmitter) Submit(ctx context.Context, market string, o orderstore.RecordedOrder) error {
 	body, err := json.Marshal(orderRequest{
-		Market:   market,
-		Side:     o.Side,
-		Price:    o.Price,
-		Quantity: o.Quantity,
+		Market:        market,
+		Side:          o.Side,
+		Price:         o.Price,
+		Quantity:      o.Quantity,
+		SourceOrderID: o.OrderID,
 	})
 	if err != nil {
 		return err

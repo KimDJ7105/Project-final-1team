@@ -21,6 +21,7 @@ func ApplyOrderEvent(ctx context.Context, s Store, ev events.OrderEvent) error {
 			Quantity:        ev.Quantity,
 			Mode:            ev.Mode,
 			SubmittedAt:     ev.AcceptedAt,
+			SourceOrderID:   ev.SourceOrderID,
 		})
 	case events.OrderCancel:
 		return s.CancelOrder(ctx, ev.OrderID, ev.CanceledAt)

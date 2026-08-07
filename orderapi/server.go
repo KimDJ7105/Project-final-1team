@@ -15,12 +15,17 @@ import (
 	"orderapi/validate"
 )
 
-// orderRequest는 POST /v1/orders의 요청 본문입니다.
+// orderRequest는 POST /v1/orders의 요청 본문입니다. SourceOrderID는 선택
+// 필드(docs/api-specification.md 2.1) — replayengine이 리플레이 주문을 제출할
+// 때만 원본 페이퍼 트레이딩 주문의 orderId를 실어 보내고, trader의 신규 주문은
+// 아예 보내지 않습니다(주문 검증 로직에는 관여하지 않고 그대로 Kafka 메시지에
+// 실어 보내 "기록기"가 TRADE_ORDER.source_order_id를 채울 수 있게 하는 용도).
 type orderRequest struct {
-	Market   string `json:"market"`
-	Side     string `json:"side"`
-	Price    string `json:"price"`
-	Quantity string `json:"quantity"`
+	Market        string `json:"market"`
+	Side          string `json:"side"`
+	Price         string `json:"price"`
+	Quantity      string `json:"quantity"`
+	SourceOrderID string `json:"sourceOrderId,omitempty"`
 }
 
 // errorResponse는 docs/api-specification.md 4장의 공통 오류 응답 포맷입니다.
@@ -131,7 +136,7 @@ func acceptOrderHandler(store *order.Store, idem *idempotency.Store, producer ka
 			AcceptedAt: nowISO(),
 		}
 
-		if err := producer.PublishNew(r.Context(), o, key, orderMode(r)); err != nil {
+		if err := producer.PublishNew(r.Context(), o, key, orderMode(r), req.SourceOrderID); err != nil {
 			// Kafka 발행 실패는 일시적일 수 있어(브로커 재시작 등, 또는 토픽 자동 생성
 			// 중인 최초 1회 등) 멱등성 캐시에 남기지 않습니다 — 같은 키로 재시도하면
 			// 다시 시도할 수 있어야 합니다. 실제로 dev-kafka에서 토픽이 갓 생성될 때

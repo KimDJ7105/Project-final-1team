@@ -63,6 +63,21 @@ func TestApplyOrderEventNewInsertsOrder(t *testing.T) {
 	}
 }
 
+func TestApplyOrderEventNewPassesThroughSourceOrderID(t *testing.T) {
+	s := &fakeStore{}
+	err := ApplyOrderEvent(context.Background(), s, events.OrderEvent{
+		Type: events.OrderNew, OrderID: "ord_2", Market: "KRW-BTC", Side: "BUY",
+		Price: "100", Quantity: "1", Mode: "REPLAY", AcceptedAt: "2026-08-07T00:00:00.000Z",
+		SourceOrderID: "ord_1",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := s.inserted[0].SourceOrderID; got != "ord_1" {
+		t.Errorf("SourceOrderID = %q, want ord_1", got)
+	}
+}
+
 func TestApplyOrderEventCancelUpdatesStatus(t *testing.T) {
 	s := &fakeStore{}
 	err := ApplyOrderEvent(context.Background(), s, events.OrderEvent{

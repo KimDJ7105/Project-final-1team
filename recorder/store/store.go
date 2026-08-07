@@ -6,7 +6,9 @@ package store
 
 import "context"
 
-// NewOrder는 orders 토픽의 NEW 이벤트에서 저장할 필드입니다.
+// NewOrder는 orders 토픽의 NEW 이벤트에서 저장할 필드입니다. SourceOrderID는
+// 리플레이 주문만 값이 있고(trader의 신규 주문은 빈 문자열), TRADE_ORDER의
+// 자기참조 컬럼 source_order_id(docs/erd.md)로 저장됩니다.
 type NewOrder struct {
 	OrderID         string
 	ClientRequestID string
@@ -16,6 +18,7 @@ type NewOrder struct {
 	Quantity        string
 	Mode            string
 	SubmittedAt     string
+	SourceOrderID   string
 }
 
 // ExecutionInput은 executions 토픽 이벤트에서 저장할 필드입니다.

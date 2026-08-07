@@ -30,6 +30,7 @@ func DecodeOrderEvent(data []byte) (OrderEvent, error) {
 		ClientRequestID: raw.ClientRequestID,
 		Mode:            raw.Mode,
 		CanceledAt:      raw.CanceledAt,
+		SourceOrderID:   raw.SourceOrderID,
 	}, nil
 }
 

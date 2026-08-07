@@ -24,7 +24,7 @@ func TestHTTPOrderSubmitterSubmitsAcceptedOrder(t *testing.T) {
 	defer srv.Close()
 
 	s := HTTPOrderSubmitter{Client: srv.Client(), BaseURL: srv.URL}
-	o := orderstore.RecordedOrder{TS: 1, Side: "BUY", Price: "90000000", Quantity: "0.01"}
+	o := orderstore.RecordedOrder{TS: 1, Side: "BUY", Price: "90000000", Quantity: "0.01", OrderID: "ord_20260806_0000001"}
 
 	if err := s.Submit(context.Background(), "KRW-BTC", o); err != nil {
 		t.Fatalf("Submit 실패: %v", err)
@@ -37,6 +37,9 @@ func TestHTTPOrderSubmitterSubmitsAcceptedOrder(t *testing.T) {
 	}
 	if gotBody.Market != "KRW-BTC" || gotBody.Side != "BUY" || gotBody.Price != o.Price || gotBody.Quantity != o.Quantity {
 		t.Errorf("요청 바디 = %+v", gotBody)
+	}
+	if gotBody.SourceOrderID != o.OrderID {
+		t.Errorf("SourceOrderID = %q, want %q (기록 파일의 원본 orderId가 그대로 전달돼야 함)", gotBody.SourceOrderID, o.OrderID)
 	}
 }
 

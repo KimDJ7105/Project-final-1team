@@ -1,6 +1,5 @@
 -- docs/erd.md 기준 스키마 (MySQL 8+). replay_session_id/REPLAY_SESSION은 만들지
--- 않기로 결정(팀 결정, 2026-08-07 — erd.md §4)해 제외했고, source_order_id는
--- 만들기로 했지만 아직 채울 배관이 없어 제외했다(erd.md §5). 마이그레이션 툴 없이
+-- 않기로 결정(팀 결정, 2026-08-07 — erd.md §4)해 제외했다. 마이그레이션 툴 없이
 -- mysql 클라이언트로 손으로 적용한다(이 repo의 dev-simple 컨벤션 — docker-compose들도
 -- 볼륨/영속성 없이 극단적으로 단순함).
 --
@@ -33,9 +32,19 @@ CREATE TABLE IF NOT EXISTS trade_order (
     submitted_at        DATETIME(3) NOT NULL,
     canceled_at         DATETIME(3) NULL,
     created_at          DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    -- source_order_id는 리플레이 주문만 값이 있는 자기참조 컬럼입니다(FR-18 검증
+    -- "동일 파일 재생 시 총 주문 수 일치"용, docs/erd.md 참고). 의도적으로 FK가
+    -- 아닙니다 — execution.buy_order_id/sell_order_id와 같은 이유로, 원본 페이퍼
+    -- 트레이딩 주문의 NEW 이벤트를 기록기가 아직 처리하기 전에 그 리플레이 주문의
+    -- NEW 이벤트가 먼저 도착할 수 있습니다(orders 토픽 하나를 순서대로 읽지만,
+    -- 원본 주문과 리플레이 주문은 서로 다른 실행에서 몇 시간~며칠 간격을 두고
+    -- 발생할 수 있어 FK로 강제하면 리플레이 실행 시점에 원본이 DB에서 지워졌거나
+    -- 아직 없을 때 INSERT IGNORE가 이 행 전체를 조용히 건너뜁니다.
+    source_order_id     VARCHAR(64) NULL,
     CONSTRAINT fk_trade_order_market FOREIGN KEY (market_code) REFERENCES market(market_code)
 );
 CREATE INDEX idx_trade_order_market_status ON trade_order (market_code, status);
+CREATE INDEX idx_trade_order_source_order ON trade_order (source_order_id);
 
 CREATE TABLE IF NOT EXISTS execution (
     execution_id   VARCHAR(64) PRIMARY KEY,
