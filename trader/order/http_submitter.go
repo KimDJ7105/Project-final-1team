@@ -45,6 +45,7 @@ func (s HTTPOrderSubmitter) Submit(ctx context.Context, o Order) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", newIdempotencyKey())
+	req.Header.Set("X-Order-Mode", "PAPER_TRADING")
 
 	resp, err := s.Client.Do(req)
 	if err != nil {

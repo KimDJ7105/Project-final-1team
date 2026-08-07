@@ -63,6 +63,7 @@ func (s HTTPOrderSubmitter) Submit(ctx context.Context, market string, o orderst
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", newIdempotencyKey())
+	req.Header.Set("X-Order-Mode", "REPLAY")
 
 	resp, err := s.Client.Do(req)
 	if err != nil {

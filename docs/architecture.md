@@ -64,6 +64,7 @@ flowchart TB
     API --> REPLAY
 
     API --> KAFKA_ORD --> MATCH
+    KAFKA_ORD --> RECORDER
     MATCH --> REDIS
     REDIS --> API
     MATCH --> KAFKA_EXEC --> RECORDER
@@ -133,7 +134,7 @@ flowchart TB
 5. 주문 생성 로직이 방향 신호를 실제 주문으로 변환해 접수 API에 실시간 제출하고, 동시에 파일로 기록한다
 6. 접수 API는 검증 후 Kafka orders 토픽에 발행한다
 7. 매칭 엔진이 주문을 소비해 체결을 수행하고, 호가창 상태를 Redis에 반영한다(접수 API가 이 값을 조회 응답으로 돌려준다)
-8. 체결 결과는 Kafka executions 토픽을 거쳐 기록기가 RDS·S3에 저장한다
+8. 체결 결과는 Kafka executions 토픽을 거쳐 기록기가 RDS·S3에 저장한다 — 기록기는 주문 자체(측·가격·수량·상태)를 채우기 위해 orders 토픽도 함께 구독한다
 9. 트레이딩 세션 종료 시 AI 트레이더의 주문 기록 파일이 S3에 최종 업로드된다
 
 **주문 처리 (리플레이)**

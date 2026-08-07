@@ -21,9 +21,11 @@ type fakePublisher struct {
 	cancelCalls         int
 	failNext            bool
 	lastClientRequestID string
+	lastMode            string
+	lastCanceledAt      string
 }
 
-func (f *fakePublisher) PublishNew(ctx context.Context, o *order.Order, clientRequestID string) error {
+func (f *fakePublisher) PublishNew(ctx context.Context, o *order.Order, clientRequestID, mode string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failNext {
@@ -32,13 +34,15 @@ func (f *fakePublisher) PublishNew(ctx context.Context, o *order.Order, clientRe
 	}
 	f.newCalls++
 	f.lastClientRequestID = clientRequestID
+	f.lastMode = mode
 	return nil
 }
 
-func (f *fakePublisher) PublishCancel(ctx context.Context, orderID, market string) error {
+func (f *fakePublisher) PublishCancel(ctx context.Context, orderID, market, canceledAt string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.cancelCalls++
+	f.lastCanceledAt = canceledAt
 	return nil
 }
 
@@ -50,9 +54,16 @@ func newOrderMux(store *order.Store, idem *idempotency.Store, pub kafkaclient.Pu
 }
 
 func postOrder(mux *http.ServeMux, idempotencyKey, body string) *httptest.ResponseRecorder {
+	return postOrderWithMode(mux, idempotencyKey, "", body)
+}
+
+func postOrderWithMode(mux *http.ServeMux, idempotencyKey, mode, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/v1/orders", strings.NewReader(body))
 	if idempotencyKey != "" {
 		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+	if mode != "" {
+		req.Header.Set("X-Order-Mode", mode)
 	}
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -105,6 +116,37 @@ func TestAcceptOrderSuccess(t *testing.T) {
 	}
 	if pub.lastClientRequestID != "key-1" {
 		t.Errorf("PublishNew에 전달된 clientRequestID = %q, want %q (Idempotency-Key가 그대로 전달돼야 함)", pub.lastClientRequestID, "key-1")
+	}
+}
+
+func TestAcceptOrderModeHeaderPassedThrough(t *testing.T) {
+	pub := &fakePublisher{}
+	mux := newOrderMux(order.NewStore(), idempotency.NewStore(), pub)
+	postOrderWithMode(mux, "key-replay", "REPLAY", `{"market":"KRW-BTC","side":"BUY","price":"71500000","quantity":"0.015"}`)
+
+	if pub.lastMode != "REPLAY" {
+		t.Errorf("PublishNew에 전달된 mode = %q, want REPLAY", pub.lastMode)
+	}
+}
+
+func TestAcceptOrderModeHeaderMissingDefaultsToPaperTrading(t *testing.T) {
+	pub := &fakePublisher{}
+	mux := newOrderMux(order.NewStore(), idempotency.NewStore(), pub)
+	// X-Order-Mode 헤더를 아예 안 보냄 — 기존 curl/수동 테스트 워크플로를 깨면 안 됨.
+	postOrder(mux, "key-1", `{"market":"KRW-BTC","side":"BUY","price":"71500000","quantity":"0.015"}`)
+
+	if pub.lastMode != "PAPER_TRADING" {
+		t.Errorf("mode 헤더가 없으면 PAPER_TRADING으로 기본 처리돼야 하는데 %q", pub.lastMode)
+	}
+}
+
+func TestAcceptOrderModeHeaderInvalidDefaultsToPaperTrading(t *testing.T) {
+	pub := &fakePublisher{}
+	mux := newOrderMux(order.NewStore(), idempotency.NewStore(), pub)
+	postOrderWithMode(mux, "key-1", "NOT_A_REAL_MODE", `{"market":"KRW-BTC","side":"BUY","price":"71500000","quantity":"0.015"}`)
+
+	if pub.lastMode != "PAPER_TRADING" {
+		t.Errorf("알 수 없는 mode 값은 PAPER_TRADING으로 기본 처리돼야 하는데 %q", pub.lastMode)
 	}
 }
 
@@ -182,6 +224,9 @@ func TestCancelOrderSuccessThenIdempotentNoOp(t *testing.T) {
 	}
 	if pub.cancelCalls != 1 {
 		t.Errorf("두 번째 취소 요청은 재발행하면 안 되는데 PublishCancel 호출 횟수 = %d", pub.cancelCalls)
+	}
+	if pub.lastCanceledAt != firstCanceledAt {
+		t.Errorf("PublishCancel에 전달된 canceledAt = %q, want %q (응답의 canceledAt과 같아야 함)", pub.lastCanceledAt, firstCanceledAt)
 	}
 }
 

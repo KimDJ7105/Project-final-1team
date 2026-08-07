@@ -57,6 +57,24 @@ func requestID(r *http.Request) string {
 	return hex.EncodeToString(buf)
 }
 
+// orderMode는 X-Order-Mode 헤더를 읽습니다(docs/erd.md의 TRADE_ORDER.mode를
+// "기록기"가 채울 수 있게 하는 배관 — PAPER_TRADING은 trader가, REPLAY는
+// replayengine이 보냅니다). Idempotency-Key와 달리 이 값은 처리 정합성이 아니라
+// 라벨링용이라, 헤더가 없거나 알 수 없는 값이면 요청을 막지 않고 PAPER_TRADING으로
+// 기본 처리하면서 경고만 남깁니다 — 그래야 지금까지의 curl/수동 테스트 워크플로가
+// 그대로 동작합니다.
+func orderMode(r *http.Request) string {
+	switch v := r.Header.Get("X-Order-Mode"); v {
+	case "PAPER_TRADING", "REPLAY":
+		return v
+	case "":
+		return "PAPER_TRADING"
+	default:
+		log.Printf("알 수 없는 X-Order-Mode 값 %q, PAPER_TRADING으로 처리", v)
+		return "PAPER_TRADING"
+	}
+}
+
 // acceptOrderHandler는 POST /v1/orders를 처리합니다 (docs/api-specification.md 2.1, 2.2).
 func acceptOrderHandler(store *order.Store, idem *idempotency.Store, producer kafkaclient.Publisher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -113,7 +131,7 @@ func acceptOrderHandler(store *order.Store, idem *idempotency.Store, producer ka
 			AcceptedAt: nowISO(),
 		}
 
-		if err := producer.PublishNew(r.Context(), o, key); err != nil {
+		if err := producer.PublishNew(r.Context(), o, key, orderMode(r)); err != nil {
 			// Kafka 발행 실패는 일시적일 수 있어(브로커 재시작 등, 또는 토픽 자동 생성
 			// 중인 최초 1회 등) 멱등성 캐시에 남기지 않습니다 — 같은 키로 재시도하면
 			// 다시 시도할 수 있어야 합니다. 실제로 dev-kafka에서 토픽이 갓 생성될 때
@@ -158,7 +176,7 @@ func cancelOrderHandler(store *order.Store, producer kafkaclient.Publisher) http
 			o.CanceledQuantity = o.Quantity
 			o.CanceledAt = nowISO()
 
-			if err := producer.PublishCancel(r.Context(), o.OrderID, o.Market); err != nil {
+			if err := producer.PublishCancel(r.Context(), o.OrderID, o.Market, o.CanceledAt); err != nil {
 				log.Printf("취소 발행 실패 (market=%s, orderId=%s): %v", o.Market, o.OrderID, err)
 				writeError(w, reqID, http.StatusInternalServerError, "INTERNAL_ERROR", "취소 발행에 실패했습니다.")
 				return

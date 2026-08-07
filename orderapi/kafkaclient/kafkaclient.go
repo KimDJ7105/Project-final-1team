@@ -15,8 +15,8 @@ import (
 // 실제 구현(OrderProducer)은 몰라도 됩니다 — 테스트에서는 실제 Kafka 없이
 // 가짜 구현체를 주입할 수 있습니다.
 type Publisher interface {
-	PublishNew(ctx context.Context, o *order.Order, clientRequestID string) error
-	PublishCancel(ctx context.Context, orderID, market string) error
+	PublishNew(ctx context.Context, o *order.Order, clientRequestID, mode string) error
+	PublishCancel(ctx context.Context, orderID, market, canceledAt string) error
 }
 
 // OrderProducer는 주문 이벤트를 Kafka orders 토픽에 발행하는 Publisher 구현체입니다.
@@ -58,9 +58,11 @@ func NewOrderProducer(broker, topic string) *OrderProducer {
 // 바디로도 그대로 나가는 구조체)에는 담지 않고 이 메시지에만 실어 보냅니다 —
 // docs/api-specification.md가 정의한 응답 바디 계약을 건드리지 않으면서, 나중에
 // "기록기"가 orders 토픽을 구독해 TRADE_ORDER.client_request_id(docs/erd.md)를
-// 채울 수 있게 하려는 목적입니다. matching은 이 필드를 몰라도 되므로(자기 매칭
-// 로직에 안 씀) matching/kafkaclient의 디코더는 손대지 않았습니다 — 알지 못하는
-// JSON 필드는 그냥 무시됩니다.
+// 채울 수 있게 하려는 목적입니다. Mode(NEW만)/CanceledAt(CANCEL만)도 같은 이유로
+// 추가됐습니다 — TRADE_ORDER.mode/canceled_at을 기록기가 채울 수 있게 하는 배관.
+// matching은 이 필드들을 몰라도 되므로(자기 매칭 로직에 안 씀)
+// matching/kafkaclient의 디코더는 손대지 않았습니다 — 알지 못하는 JSON 필드는
+// 그냥 무시됩니다.
 type orderEvent struct {
 	Type            string `json:"type"` // "NEW" | "CANCEL"
 	OrderID         string `json:"orderId"`
@@ -70,12 +72,15 @@ type orderEvent struct {
 	Quantity        string `json:"quantity,omitempty"`
 	AcceptedAt      string `json:"acceptedAt,omitempty"`
 	ClientRequestID string `json:"clientRequestId,omitempty"`
+	Mode            string `json:"mode,omitempty"`
+	CanceledAt      string `json:"canceledAt,omitempty"`
 }
 
 // PublishNew는 신규 접수된 주문을 발행합니다. Key는 market — 같은 마켓 주문이
 // 항상 같은 파티션에 순서대로 쌓이게 합니다. clientRequestID는 요청의
-// Idempotency-Key 값을 그대로 전달받아 메시지에 싣습니다(위 orderEvent 설명 참고).
-func (p *OrderProducer) PublishNew(ctx context.Context, o *order.Order, clientRequestID string) error {
+// Idempotency-Key 값을, mode는 X-Order-Mode 헤더 값(PAPER_TRADING/REPLAY)을
+// 그대로 전달받아 메시지에 싣습니다(위 orderEvent 설명 참고).
+func (p *OrderProducer) PublishNew(ctx context.Context, o *order.Order, clientRequestID, mode string) error {
 	return p.publish(ctx, o.Market, orderEvent{
 		Type:            "NEW",
 		OrderID:         o.OrderID,
@@ -85,13 +90,17 @@ func (p *OrderProducer) PublishNew(ctx context.Context, o *order.Order, clientRe
 		Quantity:        o.Quantity,
 		AcceptedAt:      o.AcceptedAt,
 		ClientRequestID: clientRequestID,
+		Mode:            mode,
 	})
 }
 
 // PublishCancel은 취소 이벤트를 발행합니다. 신규 주문과 같은 마켓 파티션에 실어서,
 // 매칭 엔진이 같은 마켓 안에서는 신규/취소를 순서대로 처리하게 합니다.
-func (p *OrderProducer) PublishCancel(ctx context.Context, orderID, market string) error {
-	return p.publish(ctx, market, orderEvent{Type: "CANCEL", OrderID: orderID, Market: market})
+// canceledAt은 호출부(cancelOrderHandler)가 이미 계산해둔 취소 시각을 그대로
+// 전달받아 싣습니다 — 기록기가 자기 처리 시각이 아니라 실제 취소 시각을 쓸 수
+// 있게 하려는 목적입니다.
+func (p *OrderProducer) PublishCancel(ctx context.Context, orderID, market, canceledAt string) error {
+	return p.publish(ctx, market, orderEvent{Type: "CANCEL", OrderID: orderID, Market: market, CanceledAt: canceledAt})
 }
 
 func (p *OrderProducer) publish(ctx context.Context, key string, event orderEvent) error {
