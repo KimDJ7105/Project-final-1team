@@ -3,7 +3,8 @@
 ## 변경 이력
 | 날짜 | 변경 내용 |
 |---|---|
-| 2026-08-07 | 기록기 DB를 PostgreSQL에서 **MySQL**로 전환(팀 결정, 기본 포트 3306) — 스키마 자체(테이블/컬럼 구조)는 바뀌지 않았고 `recorder/schema.sql`의 타입 표현만 MySQL 문법에 맞춘 것(예: `TEXT`→`VARCHAR(N)`, `NUMERIC`→`DECIMAL(24,8)`, `TIMESTAMPTZ`→`DATETIME(3)`). `MATCHING_ENGINE_ASSIGNMENT`를 실제로 채우는 배관을 완성: `matching`이 `Acquire`/`Release` 시점에 새 Kafka 토픽 `assignments`로 `ASSIGNED`/`RELEASED` 이벤트를 발행하고, 기록기가 이를 구독해 이 테이블에 기록한다(팀 결정: "기록기가 모든 DB 입력을 담당"). 이 과정에서 크래시(강제 종료) 시 이전 배정 행이 영원히 `released_at IS NULL`로 남는 문제를 발견해, 새 `ASSIGNED` 기록 시 같은 마켓의 기존 열린 행을 먼저 닫도록 수정(4장 참고) |
+| 2026-08-07(2차) | **`REPLAY_SESSION` 테이블·`TRADE_ORDER.replay_session_id` 컬럼 제거로 결론(팀 결정)** — 이 프로젝트가 ~1개월짜리 인프라 부하테스트라는 점, 그리고 TPS/컨슈머 랙 같은 운영 지표를 이미 RDS 대신 모니터링 스택으로 뺀 전례(1장 "범위 제외" 표)에 비춰, "이 리플레이가 어떤 파일/배속/엔진 대수로 돌았는지"도 프로세스 로그·K8s Job 스펙만으로 충분하다고 판단해 굳이 테이블을 만들지 않기로 함(4장 참고). **`source_order_id`는 `REPLAY_SESSION`과 무관하게 독립적으로 남김** — 세션 개념 없이도 `TRADE_ORDER` 자기참조만으로 채울 수 있고, FR-18 검증("동일 파일 재생 시 총 주문 수 일치")에 필요해서 구현은 계속 예정(5장). 문서화 과정에서 **별도의 실제 구현 공백을 새로 발견**: FR-19(리플레이 엔진 분산 실행)는 여러 `replayengine` 프로세스를 동시에 띄우는 걸 전제하는데, "동시 실행 방지" 세션 가드(`orderapi/session`)가 `owner`와 무관하게 시스템 전체에서 단 하나의 세션만 허용하는 구조라 두 번째 샤드의 `Claim`이 무조건 409로 거부됨 — 팀 논의 필요, 5장에 남김 |
+| 2026-08-07(1차) | 기록기 DB를 PostgreSQL에서 **MySQL**로 전환(팀 결정, 기본 포트 3306) — 스키마 자체(테이블/컬럼 구조)는 바뀌지 않았고 `recorder/schema.sql`의 타입 표현만 MySQL 문법에 맞춘 것(예: `TEXT`→`VARCHAR(N)`, `NUMERIC`→`DECIMAL(24,8)`, `TIMESTAMPTZ`→`DATETIME(3)`). `MATCHING_ENGINE_ASSIGNMENT`를 실제로 채우는 배관을 완성: `matching`이 `Acquire`/`Release` 시점에 새 Kafka 토픽 `assignments`로 `ASSIGNED`/`RELEASED` 이벤트를 발행하고, 기록기가 이를 구독해 이 테이블에 기록한다(팀 결정: "기록기가 모든 DB 입력을 담당"). 이 과정에서 크래시(강제 종료) 시 이전 배정 행이 영원히 `released_at IS NULL`로 남는 문제를 발견해, 새 `ASSIGNED` 기록 시 같은 마켓의 기존 열린 행을 먼저 닫도록 수정(4장 참고) |
 | 2026-08-06(3차) | "기록기"(`recorder/` 신규 Go 모듈) 구축: `orders`/`executions` 토픽을 소비해 `TRADE_ORDER`/`EXECUTION`을 채움. `X-Order-Mode` 헤더 배관으로 `mode` 컬럼을 채울 수 있게 됨(`docs/api-specification.md` §1.3), `remaining_quantity`는 기록기가 체결 트랜잭션에서 직접 계산. §5의 `mode`/`remaining_quantity`/`EXECUTION.mode` 항목을 §4로 이동(해결됨) — `REPLAY_SESSION` 관련만 §5에 남음 |
 | 2026-08-06(2차) | 스키마 정리: `TRADER_BOT`/`REPLAY_ENGINE_MARKET` 제거, `MARKET.frequency_group` 제거, `TRADE_ORDER.status` 값을 실제 코드(`orderapi/order/order.go`)와 일치시킴(`OPEN`→`ACCEPTED`, `CANCELLED`→`CANCELED`). `TRADE_ORDER.client_request_id`는 `orderapi`가 Kafka `orders` 토픽 메시지에 `clientRequestId` 필드로 실어 보내도록 코드를 바꿔 채울 수 있게 함(`orderapi/kafkaclient/kafkaclient.go`). `MATCHING_ENGINE_ASSIGNMENT`는 FR-11이 실제로 구현·검증됐으므로 "빈 테이블" 메모를 갱신. `REPLAY_SESSION` 관련 세션 격리 문제는 결론 없이 계속 검토 중으로 남김 |
 | 2026-08-06(1차) | `orderapi`/`matching`/`trader`/`replayengine` 실제 구현과 대조해 "지금 채울 방법이 없는" 테이블/컬럼을 5장에 정리(스키마 변경 아님, 발견 사항만 기록) |
@@ -34,8 +35,6 @@ erDiagram
     MARKET ||--o{ EXECUTION : "체결 발생"
     MARKET ||--o{ MATCHING_ENGINE_ASSIGNMENT : "매칭 엔진 담당"
 
-    REPLAY_SESSION ||--o{ TRADE_ORDER : "세션에서 재생"
-
     TRADE_ORDER ||--o{ EXECUTION : "매수측 체결"
     TRADE_ORDER ||--o{ EXECUTION : "매도측 체결"
     TRADE_ORDER ||--o| TRADE_ORDER : "리플레이 원본 주문 참조"
@@ -56,7 +55,6 @@ erDiagram
         decimal remaining_quantity "미체결 잔량(FR-07)"
         string status "ACCEPTED/PARTIALLY_FILLED/FILLED/CANCELED"
         string mode "PAPER_TRADING/REPLAY"
-        string replay_session_id FK "소속 리플레이 세션, 리플레이만 해당(nullable)"
         string source_order_id FK "리플레이 시 원본 페이퍼 주문(자기참조, nullable)"
         datetime submitted_at
         datetime canceled_at "취소 시각(nullable, FR-03/FR-10)"
@@ -72,16 +70,6 @@ erDiagram
         decimal quantity
         string mode "PAPER_TRADING/REPLAY"
         datetime executed_at
-    }
-
-    REPLAY_SESSION {
-        string session_id PK
-        string source_file_key "S3 상 페이퍼 트레이딩 주문 기록 파일 경로(FR-17)"
-        decimal speed_multiplier "재생 배속(FR-18)"
-        int engine_count "분산 실행 엔진 대수(FR-19)"
-        string status "RUNNING/COMPLETED/FAILED"
-        datetime started_at
-        datetime ended_at
     }
 
     MATCHING_ENGINE_ASSIGNMENT {
@@ -104,9 +92,6 @@ erDiagram
 ### EXECUTION
 매칭 엔진이 체결한 결과(FR-06, FR-09). 매수·매도 주문 번호를 각각 참조해 "체결 결과의 매수·매도 주문 번호가 실제 체결 주문과 일치"(FR-09 검증)를 보장한다. 거래 내역 조회(FR-13)는 이 테이블을 최신순으로 조회한다.
 
-### REPLAY_SESSION
-리플레이 1회 실행 단위(FR-18). 입력 파일, 배속, 분산 실행 시 사용한 엔진 대수를 기록해 재현 가능성을 확보한다. 이 테이블이 실제로 채워지려면 `replayengine`이 실행마다 세션 ID를 발급하고 그 값을 주문 요청에 실어 보내는 배관이 먼저 필요하다 — 아직 결론 내리지 않은 사안이라 5장에서 계속 다룬다.
-
 ### MATCHING_ENGINE_ASSIGNMENT
 매칭 엔진 수 증감에 따른 마켓 재분배 이력(FR-11). "한 마켓은 항상 정확히 한 엔진만 담당"(1.2.2) 원칙을 `released_at IS NULL` 조건으로 검증할 수 있다. FR-11은 실제로 구현·검증됐고(`matching/main.go`의 `marketRegistry.Acquire`/`Release`), **2026-08-07부터 실제로 이 테이블에 값이 채워진다**: `matching`이 `Acquire`/`Release` 시점마다 Kafka `assignments` 토픽에 `ASSIGNED`/`RELEASED` 이벤트를 발행하고(`matching/kafkaclient/assignment_producer.go`), 기록기가 그걸 구독해 행을 기록한다(`recorder/store/mysql.go`의 `AssignMarket`/`ReleaseMarket`) — `matching`은 여전히 RDS에 직접 쓰지 않는다(role B는 Kafka 경유만, 팀 결정: "기록기가 모든 DB 입력을 담당"). `REPLAY_ENGINE_MARKET`(제거됨, 4장 참고)과 달리 이 배정은 측정된 부하에 따라 동적으로 정해지므로 사후에 재계산할 수 없어서, 기록해둘 실질적인 가치가 있다.
 
@@ -118,8 +103,9 @@ erDiagram
 - **가격/수량 정밀도**: `price`, `quantity`는 암호화폐 특성상 소수점 자리수가 커 부동소수점 오차가 정합성 요구사항(NFR-07\~10)에 영향을 줄 수 있으므로 DECIMAL(NUMERIC) 타입을 전제로 했다.
 - **제거된 테이블/컬럼(2026-08-06)**:
   - **`TRADER_BOT`, `TRADE_ORDER.bot_id`** — 채울 배관(주문에 "어떤 봇이 만들었는지" 실어 보낼 필드)이 없는 것과 별개로, 이 정보의 용도(FR-25 "봇별 주문 현황")가 애초에 RDS로 정규화할 성격이 아니라고 판단했다. 1장의 "범위 제외" 표가 TPS·컨슈머 랙 같은 운영 지표를 이미 모니터링 스택으로 뺀 것과 같은 이유 — 봇별 집계도 로그/모니터링 쪽에서 다루는 게 일관된다.
-  - **`REPLAY_ENGINE_MARKET`** — FR-19의 마켓 분산은 `replayengine`이 `i % shardCount == shardIndex`로 완전히 결정론적으로 계산한다(`CLAUDE.md`의 `replayengine/main.go` 설명 참고) — 중앙에서 내려주는 실제 배정 이벤트가 없고, `REPLAY_SESSION.engine_count`와 마켓 목록만 알면 언제든 재계산 가능해서 별도로 기록할 정보가 없다. `MATCHING_ENGINE_ASSIGNMENT`는 반대로 런타임에 측정된 부하로 동적으로 정해지는 배정(FR-11, LPT)이라 사후 재계산이 불가능하므로 남겨뒀다.
+  - **`REPLAY_ENGINE_MARKET`** — FR-19의 마켓 분산은 `replayengine`이 `i % shardCount == shardIndex`로 완전히 결정론적으로 계산한다(`CLAUDE.md`의 `replayengine/main.go` 설명 참고) — 중앙에서 내려주는 실제 배정 이벤트가 없고, `-shard-count`(엔진 대수)와 마켓 목록만 알면 언제든 재계산 가능해서 별도로 기록할 정보가 없다. `MATCHING_ENGINE_ASSIGNMENT`는 반대로 런타임에 측정된 부하로 동적으로 정해지는 배정(FR-11, LPT)이라 사후 재계산이 불가능하므로 남겨뒀다.
   - **`MARKET.frequency_group`** — `requirements.md` 1.1.4의 종목 선정 근거 설명에만 쓰이고 실제 코드 어디에도 이 분류가 없어, 이 값을 실제로 참조하는 로직이 생기기 전까지는 순수 문서용 메타데이터를 컬럼으로 둘 이유가 약하다고 판단했다.
+  - **`REPLAY_SESSION`, `TRADE_ORDER.replay_session_id`(2026-08-07 팀 결정)** — 리플레이 1회 실행이 어떤 파일/배속/엔진 대수로 돌았는지를 RDS에 영구히 남기는 게 원래 목적이었지만, 이 정보도 `TRADER_BOT`/`REPLAY_ENGINE_MARKET`/`MARKET.frequency_group`을 뺀 것과 같은 이유로 정규화된 테이블이 꼭 필요하진 않다고 판단했다 — 이미 프로세스 로그에 남고, K8s Job으로 실행한다면 Job 스펙에도 그대로 보존된다(`CLAUDE.md`의 "Trader/simulator launch via K8s Job" 절 참고). 이 프로젝트가 ~1개월짜리 인프라 부하테스트이고 리플레이를 반복해서 아주 여러 번 돌릴 계획이 아니라, EXECUTION 행을 실행별로 SQL JOIN으로 구조적으로 비교해야 할 필요가 지금은 낮다고 봤다. 트레이드오프: 나중에 여러 리플레이 실행 결과를 자주 비교해야 하는 상황이 오면, 시각 범위로 대략 추정하는 것보다 불편해질 수 있다 — 그때 다시 필요성을 재검토한다. **`source_order_id`는 이 결정과 무관하게 독립적으로 남았다** — 세션 개념 없이도 `TRADE_ORDER` 자기참조만으로 채울 수 있는 별개의 컬럼이라, 제거하지 않고 5장에서 계속 구현을 추진한다.
 - **`TRADE_ORDER.status` 값 수정** — 이전 초안의 `OPEN`/`CANCELLED`는 실제로 구현된 `docs/api-specification.md`/`orderapi/order/order.go`의 상수(`ACCEPTED`/`CANCELED`)와 다른 값이었다. ERD를 실제 API 계약에 맞춰 고쳤다(`cancelled_at`→`canceled_at`도 같은 이유).
 - **`TRADE_ORDER.client_request_id` 배관 추가** — 이전엔 `orderapi`의 Kafka `orders` 토픽 메시지에 `Idempotency-Key` 값이 실려 있지 않아 이 컬럼을 채울 방법이 없었다. `orderapi/kafkaclient/kafkaclient.go`의 `orderEvent`에 `clientRequestId` 필드를 추가하고, `Publisher.PublishNew`가 그 값을 받아 싣도록 고쳤다(`server.go`의 `acceptOrderHandler`가 이미 갖고 있던 `Idempotency-Key` 값을 그대로 전달) — `order.Order`(HTTP 응답 바디로도 나가는 구조체)에는 담지 않아 `docs/api-specification.md`의 응답 계약은 그대로다. 이제 "기록기"가 `orders` 토픽에서 이 값을 읽어 채울 수 있다.
 - **`TRADE_ORDER.mode`/`EXECUTION.mode` 배관 추가(2026-08-06)** — `POST /v1/orders`에 새 헤더 `X-Order-Mode`(`docs/api-specification.md` §1.3)를 추가해 `orderapi`가 페이퍼 트레이딩/리플레이 주문을 구분할 수 있게 했다. `orderEvent`에 `mode`(NEW만)/`canceledAt`(CANCEL만) 필드도 같은 방식으로 추가해, `trader`는 항상 `PAPER_TRADING`을, `replayengine`은 항상 `REPLAY`를 명시적으로 보낸다. `EXECUTION.mode`는 매수·매도 양쪽 `TRADE_ORDER.mode`가 다를 경우(세션 가드 덕분에 극히 드문, 이전 세션이 남긴 미체결 주문이 새 세션과 매칭되는 경우로 예상) 매수측 값을 쓰고 경고 로그를 남긴다(`recorder/store/apply.go`의 `ResolveMode`) — 비정규화 자체는 의도한 설계로 확정.
@@ -128,7 +114,7 @@ erDiagram
 
 ## 5. 남은 검토 사항 (실제 구현과 대조해 발견, 스키마는 아직 안 바꿈)
 
-`orderapi`(role A)·`matching`(role B)·`trader`·`replayengine`·`recorder`를 실제로 구현·검증해보니, 이 ERD가 전제하는 정보 중 일부가 **지금의 API 계약/코드로는 채울 방법이 없다.** 테이블/컬럼 자체가 잘못됐다기보다, 그 값을 만들어 넘겨주는 배관이 시스템 어디에도 아직 없다는 뜻이다 — 그래서 "삭제"가 아니라 "지금 당장은 못 채우는 것"으로 정리해둔다. (2026-08-06 논의로 `TRADER_BOT`/`REPLAY_ENGINE_MARKET`/`MARKET.frequency_group`/`MATCHING_ENGINE_ASSIGNMENT`/`client_request_id`/`mode`/`remaining_quantity` 항목은 결론이 나서 4장으로 옮겼다 — 아래는 `REPLAY_SESSION` 관련만 남았다.)
+`orderapi`(role A)·`matching`(role B)·`trader`·`replayengine`·`recorder`를 실제로 구현·검증해보니, 이 ERD가 전제하는 정보 중 일부가 **지금의 API 계약/코드로는 채울 방법이 없다.** 테이블/컬럼 자체가 잘못됐다기보다, 그 값을 만들어 넘겨주는 배관이 시스템 어디에도 아직 없다는 뜻이다 — 그래서 "삭제"가 아니라 "지금 당장은 못 채우는 것"으로 정리해둔다. (2026-08-06 논의로 `TRADER_BOT`/`REPLAY_ENGINE_MARKET`/`MARKET.frequency_group`/`MATCHING_ENGINE_ASSIGNMENT`/`client_request_id`/`mode`/`remaining_quantity` 항목은 결론이 나서 4장으로 옮겼고, 2026-08-07 `REPLAY_SESSION`/`replay_session_id`도 "만들지 않기로" 결론이 나서 4장으로 옮겼다 — 아래는 아직 결론이 안 난 항목들이다.)
 
-- **`TRADE_ORDER.replay_session_id`, `TRADE_ORDER.source_order_id`, `REPLAY_SESSION` — 결론 없이 계속 검토 중.** 이 셋이 전제하는 "리플레이 세션"이라는 개념 자체가 지금 시스템에 없다. `replayengine`은 `-date`/`-shard-index` 같은 CLI 플래그로만 동작하고, `REPLAY_SESSION` 테이블에 해당하는 세션 ID를 발급하거나 API에 실어보내는 로직이 아예 없다(리플레이 한 번 실행 = 그냥 파일 읽어서 다시 제출하는 것 뿐) — 참고로 "서로 다른 두 실행이 같은 호가창을 오염시키는" 문제 자체는 별도로 해결됐다("동시 실행 방지" 세션 가드, `CLAUDE.md` 참고 — `orderapi/session`이 트레이더/시뮬레이터를 한 번에 하나만 실행되게 막는다). 이 항목은 그 오염 방지와는 별개로, "이 리플레이 실행이 어떤 파일/배속/엔진 대수로 돌았는지"를 DB에 남기는 순수 기록/재현성 목적이라 아직 결론 내리지 않고 계속 검토한다.
-  - **`source_order_id`는 `REPLAY_SESSION`보다 더 좁고 구체적인 이유로도 막혀 있다** — `replayengine`이 재생하는 원본 데이터인 `trader/orderstore.RecordedOrder`(FR-17이 기록하는 주문 파일의 행 형식) 자체가 원본 주문의 `order_id`를 저장하지 않는다(`ts`/`side`/`price`/`quantity`만 있음, `CLAUDE.md`의 "Order records" 절 참고). 즉 `REPLAY_SESSION` 개념이 생기더라도, `source_order_id`를 채우려면 그 전에 `trader`가 기록 파일에 원본 `order_id`를 추가로 남기도록 FR-17의 파일 형식 자체를 바꿔야 한다 — 세션 개념의 부재보다 한 단계 더 앞선, 별도의 선행 조건이다.
+- **`TRADE_ORDER.source_order_id` — 만들기로 결정(2026-08-07), 구현은 아직 안 함.** `REPLAY_SESSION`과는 무관하게, `TRADE_ORDER` 자기참조만으로 채울 수 있는 컬럼이다. 다만 지금은 채울 방법이 없다 — `replayengine`이 재생하는 원본 데이터인 `trader/orderstore.RecordedOrder`(FR-17이 기록하는 주문 파일의 행 형식) 자체가 원본 주문의 `order_id`를 저장하지 않는다(`ts`/`side`/`price`/`quantity`만 있음, `CLAUDE.md`의 "Order records" 절 참고). 계획한 2단계 배관: **(1)** `trader/order/http_submitter.go`가 `orderapi` 응답의 `orderId`를 파싱해서 `OrderSubmitter.Submit`이 이를 반환하도록 시그니처를 바꾸고, `RecordedOrder`에 `OrderID` 필드를 추가해 FR-17 기록 파일에 실제로 남긴다. **(2)** `replayengine`이 그 값을 읽어 `POST /v1/orders` 요청에 (예: `sourceOrderId`) 실어 보내고, `orderapi`가 `clientRequestId`/`mode`와 같은 패턴으로 이를 Kafka NEW 이벤트에 태워, 기록기가 `source_order_id`로 저장한다.
+- **FR-19(리플레이 엔진 분산 실행)와 "동시 실행 방지" 세션 가드의 충돌 — 팀 논의 필요, 발견만 하고 미해결(2026-08-07).** `requirements.md` FR-19는 "단일 리플레이 엔진으로 부하가 부족할 경우 마켓 단위로 분산 실행한다"고 명시하는데, `orderapi/session/session.go`의 `Claim`은 `owner` 값과 무관하게 `orderapi:session:active`라는 단 하나의 Redis 키에 `SETNX`를 거는 구조라(`session.go:88`) 샤드 0이 `Claim`에 성공하면 샤드 1은 owner 이름이 뭐든 무조건 409(`ErrAlreadyActive`)로 거부되어 시작조차 못 한다. 즉 FR-19가 요구하는 "여러 `replayengine` 프로세스를 동시에 띄워서 분산 처리"하는 상황 자체가 지금 구조로는 일어날 수 없다 — `REPLAY_SESSION` 제거와는 별개로, "동시 실행 방지" 세션 가드를 FR-19의 여러 샤드를 "하나의 실행"으로 취급해 통과시켜주도록(예: 같은 실행의 샤드들이 세션 ID를 공유해 재진입 허용) 고칠지, 다른 방식으로 풀지 팀 논의가 필요하다.

@@ -1,5 +1,6 @@
--- docs/erd.md 기준 스키마 (MySQL 8+). replay_session_id/source_order_id/REPLAY_SESSION은
--- 아직 미해결(erd.md §5)이라 이 스키마에서는 제외한다. 마이그레이션 툴 없이
+-- docs/erd.md 기준 스키마 (MySQL 8+). replay_session_id/REPLAY_SESSION은 만들지
+-- 않기로 결정(팀 결정, 2026-08-07 — erd.md §4)해 제외했고, source_order_id는
+-- 만들기로 했지만 아직 채울 배관이 없어 제외했다(erd.md §5). 마이그레이션 툴 없이
 -- mysql 클라이언트로 손으로 적용한다(이 repo의 dev-simple 컨벤션 — docker-compose들도
 -- 볼륨/영속성 없이 극단적으로 단순함).
 --
