@@ -81,6 +81,15 @@ func (s *MySQLStore) InsertOrdersBatch(ctx context.Context, orders []NewOrder) e
 // 하나로 묶는 것만으로도 커밋 횟수(= RDS에서 상대적으로 비싼 연산)를 건수만큼이
 // 아니라 배치당 1번으로 줄일 수 있습니다. 대상 주문이 없는 항목(NEW를 못 본
 // CANCEL)은 그 항목만 영향받는 행 0개로 조용히 넘어갑니다 — 에러가 아닙니다.
+//
+// WHERE에 FILLED도 막는 이유(2026-08-07, 실제 발생 가능한 케이스 분석 후 결정) —
+// orders/executions는 기록기가 서로 독립적으로 소비하므로(배칭으로 그 창이 더
+// 벌어짐), 어떤 주문이 완전 체결된 *뒤에* 그 주문에 대한 취소가 기록기에 도착할
+// 수 있습니다(가장 흔한 경로: orderapi의 order.Store가 체결 결과를 몰라 이미
+// 체결된 주문의 취소 요청도 그냥 받아서 발행해버림 — server.go의 "still never
+// learns about fills" 참고). 완전 체결은 매칭엔진의 호가창에서 이미 확정된
+// 사실이라 뒤늦은 취소가 그걸 덮어쓰면 안 됩니다 — updateFill이 반대 방향
+// (체결이 취소를 정정)을 처리하는 것과 대칭되는 보호입니다.
 func (s *MySQLStore) CancelOrdersBatch(ctx context.Context, cancels []CancelInput) error {
 	if len(cancels) == 0 {
 		return nil
@@ -100,7 +109,7 @@ func (s *MySQLStore) CancelOrdersBatch(ctx context.Context, cancels []CancelInpu
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE trade_order
 			SET status = 'CANCELED', canceled_at = ?
-			WHERE order_id = ? AND status <> 'CANCELED'
+			WHERE order_id = ? AND status NOT IN ('CANCELED', 'FILLED')
 		`, parsed, c.OrderID); err != nil {
 			return fmt.Errorf("취소 일괄 반영 실패 (orderId=%s): %w", c.OrderID, err)
 		}
@@ -173,16 +182,33 @@ func (s *MySQLStore) ApplyExecutionsBatch(ctx context.Context, execs []Execution
 
 // updateFill은 한 주문의 remaining_quantity를 qty만큼 SQL 안에서 직접 줄이고
 // (Go에서 decimal 연산을 다시 구현할 필요 없음) status를 그 결과에 맞게 바꿉니다.
-// UPDATE의 RowsAffected로 주문 존재 여부를 확인한 뒤(0건이면 못 찾은 것 —
-// 기록기가 그 주문의 NEW 이벤트를 못 본 경우, 에러 아님), 같은 트랜잭션에서
-// mode를 SELECT로 읽어옵니다.
+// remaining_quantity는 이 주문이 이미 CANCELED든 아니든 항상 정확히 반영합니다
+// — 실제 체결 사실 자체는 도착 순서와 무관하게 항상 진실이므로, 늦게 도착한
+// 체결이라도 반영을 건너뛰면 잔량이 영원히 틀린 값으로 남습니다.
+//
+// status의 CASE 순서가 중요합니다(2026-08-07, 실제 발생 케이스 분석 후 결정) —
+// ① "이번 체결로 잔량이 0 이하가 됐다"가 최우선입니다: 이건 그 주문이 실제로
+// 완전 체결됐다는 확정적 증거이므로, 이미 CANCELED로 찍혀 있었더라도(취소가
+// 이 체결보다 먼저 기록기에 도착한 경우 — orders/executions를 독립적으로
+// 소비하다 보니 실제로 일어남) FILLED로 정정합니다. ② 잔량이 아직 남았는데
+// 이미 CANCELED면 그대로 유지합니다 — 정상적인 "부분체결 후 취소" 흐름에서
+// 늦게 도착한 부분체결이 취소를 되돌리면 안 되기 때문입니다. ③ 그 외엔 기존과
+// 같이 PARTIALLY_FILLED. CancelOrdersBatch의 FILLED 보호와 대칭을 이룹니다.
+// ①로 FILLED가 확정되는 순간 canceled_at도 함께 NULL로 지웁니다 — 그 전에
+// 뒤늦게 잘못 찍혔던 CANCELED 상태의 흔적(취소 시각)을 같이 정리해서, "체결
+// 완료됐는데 취소 시각도 남아있는" 모순된 행이 남지 않게 합니다.
 func updateFill(ctx context.Context, tx *sql.Tx, orderID, qty string) (mode string, found bool, err error) {
 	res, err := tx.ExecContext(ctx, `
 		UPDATE trade_order
 		SET remaining_quantity = remaining_quantity - ?,
-		    status = CASE WHEN remaining_quantity - ? <= 0 THEN 'FILLED' ELSE 'PARTIALLY_FILLED' END
+		    status = CASE
+		        WHEN remaining_quantity - ? <= 0 THEN 'FILLED'
+		        WHEN status = 'CANCELED' THEN 'CANCELED'
+		        ELSE 'PARTIALLY_FILLED'
+		    END,
+		    canceled_at = CASE WHEN remaining_quantity - ? <= 0 THEN NULL ELSE canceled_at END
 		WHERE order_id = ?
-	`, qty, qty, orderID)
+	`, qty, qty, qty, orderID)
 	if err != nil {
 		return "", false, fmt.Errorf("주문 체결 반영 실패 (orderId=%s): %w", orderID, err)
 	}
