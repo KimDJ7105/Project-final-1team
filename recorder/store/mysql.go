@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"recorder/idgen"
@@ -38,86 +39,136 @@ func NewMySQLStore(db *sql.DB) *MySQLStore {
 	return &MySQLStore{db: db}
 }
 
-// InsertOrder는 신규 주문을 저장합니다. remaining_quantity는 최초엔 quantity와
-// 같습니다. 같은 order_id가 이미 있으면(재전달 등) INSERT IGNORE로 조용히 무시합니다
-// (PostgreSQL의 ON CONFLICT DO NOTHING과 같은 의도).
-func (s *MySQLStore) InsertOrder(ctx context.Context, o NewOrder) error {
-	submittedAt, err := parseTimestamp(o.SubmittedAt)
-	if err != nil {
-		return fmt.Errorf("주문 저장 실패 (orderId=%s): %w", o.OrderID, err)
+// InsertOrdersBatch는 신규 주문 여러 건을 한 번의 다중 행 INSERT로 저장합니다
+// (RDS 백프레셔 대응 배칭, 2026-08-07 — CLAUDE.md 참고. 이전엔 건당 한 번씩
+// ExecContext를 불렀는데, 그걸 여러 건을 한 SQL 문에 묶어 왕복 횟수를 줄인
+// 것입니다). remaining_quantity는 최초엔 quantity와 같습니다. 같은 order_id가
+// 이미 있는 행은(재전달 등) INSERT IGNORE가 그 행만 조용히 무시합니다 —
+// 여러 행을 한 문장에 묶어도 IGNORE는 행 단위로 적용되므로 한 건이 중복이라고
+// 나머지 건까지 실패하지 않습니다.
+func (s *MySQLStore) InsertOrdersBatch(ctx context.Context, orders []NewOrder) error {
+	if len(orders) == 0 {
+		return nil
 	}
 
-	_, err = s.db.ExecContext(ctx, `
-		INSERT IGNORE INTO trade_order
-			(order_id, client_request_id, market_code, side, price, quantity, remaining_quantity, status, mode, submitted_at, source_order_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'ACCEPTED', ?, ?, ?)
-	`, o.OrderID, nullIfEmpty(o.ClientRequestID), o.Market, o.Side, o.Price, o.Quantity, o.Quantity, o.Mode, submittedAt, nullIfEmpty(o.SourceOrderID))
-	if err != nil {
-		return fmt.Errorf("주문 저장 실패 (orderId=%s): %w", o.OrderID, err)
-	}
-	return nil
-}
+	var sb strings.Builder
+	sb.WriteString(`INSERT IGNORE INTO trade_order
+		(order_id, client_request_id, market_code, side, price, quantity, remaining_quantity, status, mode, submitted_at, source_order_id)
+		VALUES `)
+	args := make([]any, 0, len(orders)*10)
+	for i, o := range orders {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		sb.WriteString("(?, ?, ?, ?, ?, ?, ?, 'ACCEPTED', ?, ?, ?)")
 
-// CancelOrder는 주문을 취소 상태로 바꿉니다. 대상 주문이 없으면(NEW를 못 본
-// CANCEL) 영향받는 행이 0개일 뿐, 에러가 아닙니다 — 호출부(apply.go)가 이미
-// "찾지 못함"을 에러로 취급하지 않기로 했습니다.
-func (s *MySQLStore) CancelOrder(ctx context.Context, orderID, canceledAt string) error {
-	parsed, err := parseTimestamp(canceledAt)
-	if err != nil {
-		return fmt.Errorf("취소 반영 실패 (orderId=%s): %w", orderID, err)
+		submittedAt, err := parseTimestamp(o.SubmittedAt)
+		if err != nil {
+			return fmt.Errorf("주문 일괄 저장 실패 (orderId=%s): %w", o.OrderID, err)
+		}
+		args = append(args, o.OrderID, nullIfEmpty(o.ClientRequestID), o.Market, o.Side, o.Price, o.Quantity, o.Quantity, o.Mode, submittedAt, nullIfEmpty(o.SourceOrderID))
 	}
 
-	_, err = s.db.ExecContext(ctx, `
-		UPDATE trade_order
-		SET status = 'CANCELED', canceled_at = ?
-		WHERE order_id = ? AND status <> 'CANCELED'
-	`, parsed, orderID)
-	if err != nil {
-		return fmt.Errorf("취소 반영 실패 (orderId=%s): %w", orderID, err)
+	if _, err := s.db.ExecContext(ctx, sb.String(), args...); err != nil {
+		return fmt.Errorf("주문 일괄 저장 실패 (%d건): %w", len(orders), err)
 	}
 	return nil
 }
 
-// ApplyExecution은 한 트랜잭션 안에서 매수/매도 양쪽 주문의 remaining_quantity/
-// status를 갱신하고 execution 행을 저장합니다. MySQL은 UPDATE...RETURNING이
-// 없어서(PostgreSQL 버전과의 차이) updateFill이 "UPDATE로 잠금+계산+쓰기" 한 뒤
-// 같은 트랜잭션 안에서 별도 SELECT로 mode를 읽어옵니다 — UPDATE가 그 행에 걸어둔
-// 잠금이 커밋까지 유지되므로, 그 사이 다른 트랜잭션이 값을 바꿀 수 없어 안전합니다.
-func (s *MySQLStore) ApplyExecution(ctx context.Context, in ExecutionInput) (ExecutionResult, error) {
+// CancelOrdersBatch는 취소 여러 건을 한 트랜잭션(=한 번의 커밋) 안에서
+// 처리합니다. UPDATE 문 자체는 건당 하나씩 실행되지만(각 취소가 서로 다른
+// order_id를 대상으로 해서 하나의 다중 행 UPDATE로 합치기 어려움), 트랜잭션을
+// 하나로 묶는 것만으로도 커밋 횟수(= RDS에서 상대적으로 비싼 연산)를 건수만큼이
+// 아니라 배치당 1번으로 줄일 수 있습니다. 대상 주문이 없는 항목(NEW를 못 본
+// CANCEL)은 그 항목만 영향받는 행 0개로 조용히 넘어갑니다 — 에러가 아닙니다.
+func (s *MySQLStore) CancelOrdersBatch(ctx context.Context, cancels []CancelInput) error {
+	if len(cancels) == 0 {
+		return nil
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return ExecutionResult{}, fmt.Errorf("트랜잭션 시작 실패: %w", err)
+		return fmt.Errorf("취소 일괄 반영 실패: %w", err)
 	}
 	defer tx.Rollback()
 
-	buyMode, buyFound, err := updateFill(ctx, tx, in.BuyOrderID, in.Quantity)
-	if err != nil {
-		return ExecutionResult{}, err
-	}
-	sellMode, sellFound, err := updateFill(ctx, tx, in.SellOrderID, in.Quantity)
-	if err != nil {
-		return ExecutionResult{}, err
-	}
-
-	mode, mismatched := ResolveMode(buyMode, buyFound, sellMode, sellFound)
-	execID := idgen.NewExecutionID()
-
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO execution (execution_id, market_code, buy_order_id, sell_order_id, price, quantity, mode, executed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())
-	`, execID, in.Market, in.BuyOrderID, in.SellOrderID, in.Price, in.Quantity, nullIfEmpty(mode))
-	if err != nil {
-		return ExecutionResult{}, fmt.Errorf("체결 저장 실패: %w", err)
+	for _, c := range cancels {
+		parsed, err := parseTimestamp(c.CanceledAt)
+		if err != nil {
+			return fmt.Errorf("취소 일괄 반영 실패 (orderId=%s): %w", c.OrderID, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE trade_order
+			SET status = 'CANCELED', canceled_at = ?
+			WHERE order_id = ? AND status <> 'CANCELED'
+		`, parsed, c.OrderID); err != nil {
+			return fmt.Errorf("취소 일괄 반영 실패 (orderId=%s): %w", c.OrderID, err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return ExecutionResult{}, fmt.Errorf("트랜잭션 커밋 실패: %w", err)
+		return fmt.Errorf("취소 일괄 반영 실패 (커밋): %w", err)
+	}
+	return nil
+}
+
+// ApplyExecutionsBatch는 체결 여러 건을 한 트랜잭션(=한 번의 커밋) 안에서:
+// 각 체결의 매수/매도 양쪽 주문 remaining_quantity/status를 updateFill로
+// 갱신하고(건당 로직은 단건 버전과 동일 — 각 체결이 서로 다른 주문 쌍을
+// 건드릴 수 있어 이 부분은 다중 행으로 합치기 어려움), execution 행들은 한
+// 번의 다중 행 INSERT로 저장합니다. 트랜잭션 하나로 묶이는 것 자체가 배칭의
+// 핵심 이득입니다 — 건당 트랜잭션(건당 커밋)이던 것을 배치당 트랜잭션(배치당
+// 커밋 1번)으로 줄여, RDS 쪽 커밋 오버헤드가 건수가 아니라 배치 수에 비례하게
+// 만듭니다. 반환값은 execs와 같은 순서·같은 길이입니다.
+func (s *MySQLStore) ApplyExecutionsBatch(ctx context.Context, execs []ExecutionInput) ([]ExecutionResult, error) {
+	if len(execs) == 0 {
+		return nil, nil
 	}
 
-	return ExecutionResult{
-		ExecutionID: execID, Mode: mode,
-		BuyFound: buyFound, SellFound: sellFound, ModeMismatched: mismatched,
-	}, nil
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("체결 일괄 반영 실패: %w", err)
+	}
+	defer tx.Rollback()
+
+	results := make([]ExecutionResult, len(execs))
+	var sb strings.Builder
+	sb.WriteString(`INSERT INTO execution (execution_id, market_code, buy_order_id, sell_order_id, price, quantity, mode, executed_at) VALUES `)
+	args := make([]any, 0, len(execs)*7)
+
+	for i, in := range execs {
+		buyMode, buyFound, err := updateFill(ctx, tx, in.BuyOrderID, in.Quantity)
+		if err != nil {
+			return nil, err
+		}
+		sellMode, sellFound, err := updateFill(ctx, tx, in.SellOrderID, in.Quantity)
+		if err != nil {
+			return nil, err
+		}
+
+		mode, mismatched := ResolveMode(buyMode, buyFound, sellMode, sellFound)
+		execID := idgen.NewExecutionID()
+
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		sb.WriteString("(?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())")
+		args = append(args, execID, in.Market, in.BuyOrderID, in.SellOrderID, in.Price, in.Quantity, nullIfEmpty(mode))
+
+		results[i] = ExecutionResult{
+			ExecutionID: execID, Mode: mode,
+			BuyFound: buyFound, SellFound: sellFound, ModeMismatched: mismatched,
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
+		return nil, fmt.Errorf("체결 일괄 저장 실패 (%d건): %w", len(execs), err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("체결 일괄 반영 실패 (커밋): %w", err)
+	}
+
+	return results, nil
 }
 
 // updateFill은 한 주문의 remaining_quantity를 qty만큼 SQL 안에서 직접 줄이고

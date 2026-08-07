@@ -21,6 +21,12 @@ type NewOrder struct {
 	SourceOrderID   string
 }
 
+// CancelInput은 orders 토픽의 CANCEL 이벤트에서 저장할 필드입니다.
+type CancelInput struct {
+	OrderID    string
+	CanceledAt string
+}
+
 // ExecutionInput은 executions 토픽 이벤트에서 저장할 필드입니다.
 type ExecutionInput struct {
 	Market      string
@@ -51,19 +57,28 @@ type ExecutionResult struct {
 	ModeMismatched bool
 }
 
-// Store는 TRADE_ORDER/EXECUTION에 대한 쓰기를 추상화합니다.
+// Store는 TRADE_ORDER/EXECUTION에 대한 쓰기를 추상화합니다. InsertOrdersBatch/
+// CancelOrdersBatch/ApplyExecutionsBatch는 RDS 백프레셔 대응(2026-08-07,
+// CLAUDE.md의 "RDS admission control via recorder consumer lag" 참고)으로
+// 메시지 1건당 DB 왕복 1번이던 것을 여러 건을 모아 한 번에 쓰도록 바꾼
+// 것입니다 — 옛 단건 메서드(InsertOrder/CancelOrder/ApplyExecution)는 배치
+// 크기 1로도 완전히 동일하게 동작하므로 별도로 남겨두지 않고 이걸로 대체했습니다.
 type Store interface {
-	// InsertOrder는 신규 주문을 저장합니다. 같은 order_id가 이미 있으면(재시작
-	// 후 컨슈머 그룹의 at-least-once 재전달 등) 아무 일도 하지 않습니다.
-	InsertOrder(ctx context.Context, o NewOrder) error
-	// CancelOrder는 주문을 취소 상태로 바꿉니다. 대상 주문이 없으면(NEW를 못
-	// 본 CANCEL) 아무 일도 하지 않습니다 — 에러가 아닙니다.
-	CancelOrder(ctx context.Context, orderID, canceledAt string) error
-	// ApplyExecution은 하나의 트랜잭션 안에서: 매수/매도 양쪽 주문의
-	// remaining_quantity/status를 갱신하고(존재하는 쪽만), execution 행을
-	// 저장합니다. 두 주문 다 없어도 execution 행은 항상 저장됩니다.
-	ApplyExecution(ctx context.Context, in ExecutionInput) (ExecutionResult, error)
+	// InsertOrdersBatch는 신규 주문 여러 건을 한 번의 다중 행 INSERT로
+	// 저장합니다. 같은 order_id가 이미 있으면(재시작 후 컨슈머 그룹의
+	// at-least-once 재전달 등) 그 행만 조용히 무시합니다(INSERT IGNORE).
+	InsertOrdersBatch(ctx context.Context, orders []NewOrder) error
+	// CancelOrdersBatch는 취소 여러 건을 한 트랜잭션(한 번의 커밋) 안에서
+	// 처리합니다. 대상 주문이 없는 항목(NEW를 못 본 CANCEL)은 그 항목만
+	// 조용히 건너뜁니다 — 에러가 아닙니다.
+	CancelOrdersBatch(ctx context.Context, cancels []CancelInput) error
+	// ApplyExecutionsBatch는 체결 여러 건을 한 트랜잭션(한 번의 커밋) 안에서:
+	// 각 체결의 매수/매도 양쪽 주문 remaining_quantity/status를 갱신하고
+	// (존재하는 쪽만), execution 행들을 한 번의 다중 행 INSERT로 저장합니다.
+	// 반환되는 []ExecutionResult는 입력 execs와 같은 순서·같은 길이입니다.
+	ApplyExecutionsBatch(ctx context.Context, execs []ExecutionInput) ([]ExecutionResult, error)
 	// AssignMarket은 FR-11 배정 이벤트를 기록합니다(released_at=NULL인 새 행 추가).
+	// assignments 토픽은 물량이 적어(리밸런스 시에만 발생) 배칭하지 않습니다.
 	AssignMarket(ctx context.Context, in AssignmentInput) error
 	// ReleaseMarket은 해당 마켓·인스턴스의 열려 있는(released_at IS NULL) 배정을
 	// 반납 처리합니다. 그런 배정이 없으면(예: ASSIGNED 이벤트를 못 본 경우) 아무
