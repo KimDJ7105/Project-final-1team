@@ -25,12 +25,18 @@ import (
 // ErrAlreadyActive는 이미 다른 세션이 활성 상태일 때 Claim이 반환합니다.
 var ErrAlreadyActive = errors.New("이미 활성 세션이 있습니다")
 
+// claimRequest의 RunID는 FR-19 분산 실행 지원용입니다 — 같은 리플레이 실행에
+// 속한 여러 샤드가 전부 같은 값을 보내면 세션 가드를 하나의 그룹으로 함께
+// 통과합니다(`orderapi/session`의 그룹 모델 참고). 비우면(샤드 1개짜리 단독
+// 실행) 서버가 하나 생성해 그룹 크기 1로 취급 — 기존 동작과 동일합니다.
 type claimRequest struct {
 	Owner string `json:"owner"`
+	RunID string `json:"runId,omitempty"`
 }
 
 type claimResponse struct {
 	SessionID  string `json:"sessionId"`
+	RunID      string `json:"runId"`
 	Owner      string `json:"owner"`
 	ClaimedAt  string `json:"claimedAt"`
 	TTLSeconds int    `json:"ttlSeconds"`
@@ -47,11 +53,12 @@ type Client struct {
 	BaseURL    string
 }
 
-// Claim은 owner 이름으로 세션을 하나 클레임합니다. 이미 활성 세션이 있으면
+// Claim은 owner 이름으로 runID 그룹에 합류합니다(runID가 비어있으면 그룹
+// 크기 1로 단독 클레임). 이미 다른 runID/owner의 그룹이 활성 상태면
 // ErrAlreadyActive를 감싼 에러를 반환합니다 — 호출부는 이 경우 실행을 시작하지
 // 말고 종료해야 합니다.
-func (c Client) Claim(ctx context.Context, owner string) (sessionID string, ttlSeconds int, err error) {
-	body, err := json.Marshal(claimRequest{Owner: owner})
+func (c Client) Claim(ctx context.Context, owner, runID string) (sessionID string, ttlSeconds int, err error) {
+	body, err := json.Marshal(claimRequest{Owner: owner, RunID: runID})
 	if err != nil {
 		return "", 0, err
 	}

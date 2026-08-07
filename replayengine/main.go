@@ -25,6 +25,7 @@ func run() error {
 	orderBucket := flag.String("order-bucket", "", "주문 기록을 읽어올 S3 버킷 (비어있으면 ./orders 로컬 디렉터리에서 읽음)")
 	shardIndex := flag.Int("shard-index", 0, "분산 실행 시 이 인스턴스가 담당할 샤드 번호 (0부터 시작, FR-19)")
 	shardCount := flag.Int("shard-count", 1, "분산 실행 시 전체 인스턴스 수 (기본 1 = 혼자 20개 마켓 전부 담당)")
+	runID := flag.String("run-id", "", "같은 리플레이 실행에 속한 여러 샤드가 공유할 식별자 (FR-19 분산 실행 — 세션 가드를 그룹으로 함께 통과하려면 모든 샤드에 똑같은 값을 줘야 함; 비우면 이 샤드 혼자만의 단독 실행으로 취급)")
 	fromTS := flag.Int64("from-ts", 0, "이 시각(Unix ms) 이전 주문은 재생 제외 (0이면 제한 없음, FR-27 구간 지정)")
 	toTS := flag.Int64("to-ts", 0, "이 시각(Unix ms) 이후 주문은 재생 제외 (0이면 제한 없음, FR-27 구간 지정)")
 	flag.Parse()
@@ -63,11 +64,11 @@ func run() error {
 	// 별도 함수로 뽑아낸 이유도 같다: log.Fatal이 defer(세션 반납)를 건너뛰지
 	// 않도록, 에러를 반환해 main()에서 마지막에 한 번만 처리한다.
 	sessionClient := session.Client{HTTPClient: httpClient, BaseURL: cfg.OrderAPIURL}
-	sessionID, ttlSeconds, err := sessionClient.Claim(context.Background(), "replayengine")
+	sessionID, ttlSeconds, err := sessionClient.Claim(context.Background(), "replayengine", *runID)
 	if err != nil {
-		return fmt.Errorf("세션 클레임 실패 — 트레이더/시뮬레이터는 동시에 하나만 실행할 수 있습니다: %w", err)
+		return fmt.Errorf("세션 클레임 실패 — 트레이더/시뮬레이터는 동시에 하나만 실행할 수 있고, 이미 다른 실행 그룹이 활성 상태입니다: %w", err)
 	}
-	log.Printf("세션 클레임 완료 (sessionId=%s)", sessionID)
+	log.Printf("세션 클레임 완료 (sessionId=%s, runId=%q)", sessionID, *runID)
 
 	heartbeatCtx, stopHeartbeat := context.WithCancel(context.Background())
 	var heartbeatWG sync.WaitGroup

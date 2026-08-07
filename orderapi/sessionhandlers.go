@@ -10,24 +10,32 @@ import (
 	"orderapi/session"
 )
 
-// claimRequest는 POST /v1/sessions의 요청 본문입니다.
+// claimRequest는 POST /v1/sessions의 요청 본문입니다. RunID는 FR-19(리플레이
+// 엔진 분산 실행) 지원용 선택 필드 — 같은 리플레이 실행에 속한 여러
+// `replayengine` 샤드가 전부 같은 runId를 보내면 한 그룹으로 묶여 다같이
+// 세션을 통과합니다(`orderapi/session`의 그룹 모델 참고). 생략하면(트레이더
+// 등) 서버가 하나 생성해 멤버 1개짜리 그룹으로 취급 — 예전 동작과 동일합니다.
 type claimRequest struct {
 	Owner string `json:"owner"`
+	RunID string `json:"runId,omitempty"`
 }
 
 // claimResponse는 POST /v1/sessions의 201 응답 본문입니다. ttlSeconds를 실어주는
 // 이유는 호출부(trader/replayengine)가 서버가 정한 TTL을 그대로 보고 하트비트
 // 주기를 정할 수 있게 하기 위함입니다 — 클라이언트와 서버가 각자 다른 상수를
-// 들고 있다가 어긋나는 상황을 막습니다.
+// 들고 있다가 어긋나는 상황을 막습니다. runId는 요청에서 비워 보냈을 때 서버가
+// 실제로 생성한 값을 확인할 수 있도록 항상 채워서 돌려줍니다.
 type claimResponse struct {
 	SessionID  string `json:"sessionId"`
+	RunID      string `json:"runId"`
 	Owner      string `json:"owner"`
 	ClaimedAt  string `json:"claimedAt"`
 	TTLSeconds int    `json:"ttlSeconds"`
 }
 
-// claimSessionHandler는 POST /v1/sessions를 처리합니다 — 세션을 배타적으로
-// 클레임합니다. 이미 활성 세션이 있으면 409 SESSION_ALREADY_ACTIVE.
+// claimSessionHandler는 POST /v1/sessions를 처리합니다 — runId 그룹에
+// 합류합니다(그룹이 비어있으면 새로 만듦). 이미 다른 runId/owner의 그룹이
+// 활성 상태면 409 SESSION_ALREADY_ACTIVE.
 func claimSessionHandler(store session.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		reqID := requestID(r)
@@ -39,7 +47,7 @@ func claimSessionHandler(store session.Store) http.HandlerFunc {
 			return
 		}
 
-		info, err := store.Claim(r.Context(), req.Owner)
+		info, err := store.Claim(r.Context(), req.Owner, req.RunID)
 		if err != nil {
 			var conflict *session.ConflictError
 			if errors.As(err, &conflict) {
@@ -52,9 +60,10 @@ func claimSessionHandler(store session.Store) http.HandlerFunc {
 			return
 		}
 
-		log.Printf("세션 클레임 완료 (sessionId=%s, owner=%s)", info.SessionID, info.Owner)
+		log.Printf("세션 클레임 완료 (sessionId=%s, runId=%s, owner=%s)", info.SessionID, info.RunID, info.Owner)
 		writeJSON(w, http.StatusCreated, claimResponse{
 			SessionID:  info.SessionID,
+			RunID:      info.RunID,
 			Owner:      info.Owner,
 			ClaimedAt:  info.ClaimedAt.Format(time.RFC3339),
 			TTLSeconds: int(info.TTL.Seconds()),

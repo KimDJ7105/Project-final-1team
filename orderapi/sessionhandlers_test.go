@@ -20,11 +20,13 @@ type fakeSessionStore struct {
 	heartbeatErr error
 	releaseErr   error
 
+	lastRunID       string
 	lastHeartbeatID string
 	lastReleaseID   string
 }
 
-func (f *fakeSessionStore) Claim(ctx context.Context, owner string) (session.Info, error) {
+func (f *fakeSessionStore) Claim(ctx context.Context, owner, runID string) (session.Info, error) {
+	f.lastRunID = runID
 	if f.claimErr != nil {
 		return session.Info{}, f.claimErr
 	}
@@ -65,6 +67,29 @@ func TestClaimSessionSuccess(t *testing.T) {
 	var got claimResponse
 	json.NewDecoder(rec.Body).Decode(&got)
 	if got.SessionID != "sess_1" || got.Owner != "trader" || got.TTLSeconds != 30 {
+		t.Errorf("got = %+v", got)
+	}
+}
+
+func TestClaimSessionRunIDPassedThrough(t *testing.T) {
+	store := &fakeSessionStore{claimInfo: session.Info{
+		SessionID: "run_1.mem_1", RunID: "run_1", Owner: "replayengine", ClaimedAt: time.Now().UTC(), TTL: 30 * time.Second,
+	}}
+	mux := newSessionMux(store)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(`{"owner":"replayengine","runId":"run_1"}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body=%s", rec.Code, rec.Body.String())
+	}
+	if store.lastRunID != "run_1" {
+		t.Errorf("Claim에 전달된 runID = %q, want run_1", store.lastRunID)
+	}
+	var got claimResponse
+	json.NewDecoder(rec.Body).Decode(&got)
+	if got.RunID != "run_1" || got.SessionID != "run_1.mem_1" {
 		t.Errorf("got = %+v", got)
 	}
 }
