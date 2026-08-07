@@ -9,11 +9,12 @@ import (
 
 // Config는 기록기 실행에 필요한 환경변수를 담습니다.
 type Config struct {
-	KafkaBroker     string
-	OrdersTopic     string
-	ExecutionsTopic string
-	DatabaseURL     string
-	ArchiveBucket   string
+	KafkaBroker      string
+	OrdersTopic      string
+	ExecutionsTopic  string
+	AssignmentsTopic string
+	DatabaseURL      string
+	ArchiveBucket    string
 }
 
 // LoadConfig는 로컬 .env 파일(있으면)을 읽어들인 뒤, 환경변수 기반 설정을
@@ -47,11 +48,17 @@ func LoadConfig() Config {
 		executionsTopic = "executions"
 	}
 
+	assignmentsTopic := os.Getenv("ASSIGNMENTS_TOPIC")
+	if assignmentsTopic == "" {
+		assignmentsTopic = "assignments"
+	}
+
 	return Config{
-		KafkaBroker:     broker,
-		OrdersTopic:     ordersTopic,
-		ExecutionsTopic: executionsTopic,
-		DatabaseURL:     dbURL,
-		ArchiveBucket:   os.Getenv("ARCHIVE_BUCKET"),
+		KafkaBroker:      broker,
+		OrdersTopic:      ordersTopic,
+		ExecutionsTopic:  executionsTopic,
+		AssignmentsTopic: assignmentsTopic,
+		DatabaseURL:      dbURL,
+		ArchiveBucket:    os.Getenv("ARCHIVE_BUCKET"),
 	}
 }

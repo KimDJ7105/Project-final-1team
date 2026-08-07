@@ -47,3 +47,24 @@ func DecodeExecution(data []byte) (ExecutionEvent, error) {
 		Quantity:    raw.Quantity,
 	}, nil
 }
+
+// DecodeAssignment은 assignments 토픽 메시지 하나를 파싱합니다.
+func DecodeAssignment(data []byte) (AssignmentEvent, error) {
+	var raw assignmentMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return AssignmentEvent{}, fmt.Errorf("assignments 메시지 파싱 실패: %w", err)
+	}
+
+	switch raw.Type {
+	case "ASSIGNED", "RELEASED":
+	default:
+		return AssignmentEvent{}, fmt.Errorf("알 수 없는 이벤트 타입: %q", raw.Type)
+	}
+
+	return AssignmentEvent{
+		Type:             AssignmentType(raw.Type),
+		Market:           raw.Market,
+		EngineInstanceID: raw.EngineInstanceID,
+		At:               raw.At,
+	}, nil
+}

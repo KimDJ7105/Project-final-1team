@@ -27,6 +27,13 @@ type ExecutionInput struct {
 	Quantity    string
 }
 
+// AssignmentInput은 assignments 토픽 이벤트(FR-11)에서 저장할 필드입니다.
+type AssignmentInput struct {
+	Market           string
+	EngineInstanceID string
+	At               string
+}
+
 // ExecutionResult는 ApplyExecution이 실제로 한 일을 보고합니다 — apply.go가
 // 이 값을 보고 경고 로그를 남길지 결정합니다.
 type ExecutionResult struct {
@@ -53,4 +60,10 @@ type Store interface {
 	// remaining_quantity/status를 갱신하고(존재하는 쪽만), execution 행을
 	// 저장합니다. 두 주문 다 없어도 execution 행은 항상 저장됩니다.
 	ApplyExecution(ctx context.Context, in ExecutionInput) (ExecutionResult, error)
+	// AssignMarket은 FR-11 배정 이벤트를 기록합니다(released_at=NULL인 새 행 추가).
+	AssignMarket(ctx context.Context, in AssignmentInput) error
+	// ReleaseMarket은 해당 마켓·인스턴스의 열려 있는(released_at IS NULL) 배정을
+	// 반납 처리합니다. 그런 배정이 없으면(예: ASSIGNED 이벤트를 못 본 경우) 아무
+	// 일도 하지 않습니다 — 에러가 아닙니다.
+	ReleaseMarket(ctx context.Context, in AssignmentInput) error
 }

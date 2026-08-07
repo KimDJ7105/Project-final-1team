@@ -58,3 +58,28 @@ func TestDecodeExecutionMalformedJSONFails(t *testing.T) {
 		t.Fatal("깨진 JSON인데 에러가 안 남")
 	}
 }
+
+func TestDecodeAssignmentAssigned(t *testing.T) {
+	data := []byte(`{"type":"ASSIGNED","market":"KRW-BTC","engineInstanceId":"engine_1","at":"2026-08-07T00:00:00.000Z"}`)
+	ev, err := DecodeAssignment(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ev.Type != AssignmentAssigned || ev.Market != "KRW-BTC" || ev.EngineInstanceID != "engine_1" {
+		t.Errorf("got = %+v", ev)
+	}
+}
+
+func TestDecodeAssignmentUnknownTypeFails(t *testing.T) {
+	_, err := DecodeAssignment([]byte(`{"type":"WEIRD","market":"KRW-BTC"}`))
+	if err == nil {
+		t.Fatal("알 수 없는 타입인데 에러가 안 남")
+	}
+}
+
+func TestDecodeAssignmentMalformedJSONFails(t *testing.T) {
+	_, err := DecodeAssignment([]byte(`not json`))
+	if err == nil {
+		t.Fatal("깨진 JSON인데 에러가 안 남")
+	}
+}

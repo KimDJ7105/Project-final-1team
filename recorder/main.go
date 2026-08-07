@@ -2,10 +2,11 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"log"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	_ "github.com/go-sql-driver/mysql"
 
 	"recorder/archive"
 	"recorder/events"
@@ -21,22 +22,28 @@ const (
 	archiveFlushInterval = 30 * time.Second
 
 	// 컨슈머 그룹 ID는 고정 상수입니다 — matching과 마찬가지로 배포 전체가
-	// 공유해야 하는 값이라 환경변수가 아닙니다. orders/executions를 별도
-	// 그룹으로 나눠서 서로의 파티션 배정에 관여하지 않게 합니다.
-	ordersGroupID     = "recorder-orders"
-	executionsGroupID = "recorder-executions"
+	// 공유해야 하는 값이라 환경변수가 아닙니다. orders/executions/assignments를
+	// 별도 그룹으로 나눠서 서로의 파티션 배정에 관여하지 않게 합니다.
+	ordersGroupID      = "recorder-orders"
+	executionsGroupID  = "recorder-executions"
+	assignmentsGroupID = "recorder-assignments"
 )
 
 func main() {
 	cfg := LoadConfig()
 	ctx := context.Background()
 
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	db, err := sql.Open("mysql", cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("Postgres 연결 실패: %v", err)
+		log.Fatalf("MySQL 드라이버 초기화 실패: %v", err)
 	}
-	defer pool.Close()
-	db := store.NewPostgresStore(pool)
+	defer db.Close()
+	// sql.Open은 실제로 연결하지 않고 지연 연결하므로, 시작 시점에 곧바로 확인해서
+	// (연결 문자열이 잘못됐거나 DB가 안 떠 있으면) 여기서 바로 실패가 드러나게 합니다.
+	if err := db.PingContext(ctx); err != nil {
+		log.Fatalf("MySQL 연결 확인 실패: %v", err)
+	}
+	dbStore := store.NewMySQLStore(db)
 
 	var archiveStore archive.Store
 	if cfg.ArchiveBucket != "" {
@@ -53,25 +60,34 @@ func main() {
 	defer orderReader.Close()
 	execReader := rkafka.NewExecutionReader(cfg.KafkaBroker, cfg.ExecutionsTopic, executionsGroupID)
 	defer execReader.Close()
+	assignmentReader := rkafka.NewAssignmentReader(cfg.KafkaBroker, cfg.AssignmentsTopic, assignmentsGroupID)
+	defer assignmentReader.Close()
 
 	archiveDest := cfg.ArchiveBucket
 	if archiveDest == "" {
 		archiveDest = "(로컬 ./records)"
 	}
-	log.Printf("기록기 시작 (broker=%s, orders=%s, executions=%s, archive=%s)",
-		cfg.KafkaBroker, cfg.OrdersTopic, cfg.ExecutionsTopic, archiveDest)
+	log.Printf("기록기 시작 (broker=%s, orders=%s, executions=%s, assignments=%s, archive=%s)",
+		cfg.KafkaBroker, cfg.OrdersTopic, cfg.ExecutionsTopic, cfg.AssignmentsTopic, archiveDest)
 
 	go func() {
 		err := execReader.Run(ctx, func(ctx context.Context, ev events.ExecutionEvent) error {
 			execBatcher.Add(ev)
-			return store.ApplyExecutionEvent(ctx, db, ev)
+			return store.ApplyExecutionEvent(ctx, dbStore, ev)
 		})
 		log.Fatalf("executions 리더 종료: %v", err)
 	}()
 
+	go func() {
+		err := assignmentReader.Run(ctx, func(ctx context.Context, ev events.AssignmentEvent) error {
+			return store.ApplyAssignmentEvent(ctx, dbStore, ev)
+		})
+		log.Fatalf("assignments 리더 종료: %v", err)
+	}()
+
 	err = orderReader.Run(ctx, func(ctx context.Context, ev events.OrderEvent) error {
 		orderBatcher.Add(ev)
-		return store.ApplyOrderEvent(ctx, db, ev)
+		return store.ApplyOrderEvent(ctx, dbStore, ev)
 	})
 	log.Fatalf("orders 리더 종료: %v", err)
 }

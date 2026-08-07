@@ -7,7 +7,7 @@ import (
 	"recorder/events"
 )
 
-// fakeStore는 실제 Postgres 없이 apply.go의 오케스트레이션 로직을 검증하기 위한
+// fakeStore는 실제 MySQL 없이 apply.go의 오케스트레이션 로직을 검증하기 위한
 // Store 구현체입니다.
 type fakeStore struct {
 	inserted   []NewOrder
@@ -15,6 +15,8 @@ type fakeStore struct {
 	execInputs []ExecutionInput
 	execResult ExecutionResult
 	execErr    error
+	assigned   []AssignmentInput
+	released   []AssignmentInput
 }
 
 func (f *fakeStore) InsertOrder(ctx context.Context, o NewOrder) error {
@@ -30,6 +32,16 @@ func (f *fakeStore) CancelOrder(ctx context.Context, orderID, canceledAt string)
 func (f *fakeStore) ApplyExecution(ctx context.Context, in ExecutionInput) (ExecutionResult, error) {
 	f.execInputs = append(f.execInputs, in)
 	return f.execResult, f.execErr
+}
+
+func (f *fakeStore) AssignMarket(ctx context.Context, in AssignmentInput) error {
+	f.assigned = append(f.assigned, in)
+	return nil
+}
+
+func (f *fakeStore) ReleaseMarket(ctx context.Context, in AssignmentInput) error {
+	f.released = append(f.released, in)
+	return nil
 }
 
 func TestApplyOrderEventNewInsertsOrder(t *testing.T) {
@@ -92,6 +104,32 @@ func TestApplyExecutionEventStoreErrorPropagates(t *testing.T) {
 	err := ApplyExecutionEvent(context.Background(), s, events.ExecutionEvent{BuyOrderID: "b1", SellOrderID: "s1"})
 	if err == nil {
 		t.Fatal("Store가 에러를 반환했는데 ApplyExecutionEvent가 에러를 안 반환함")
+	}
+}
+
+func TestApplyAssignmentEventAssigned(t *testing.T) {
+	s := &fakeStore{}
+	err := ApplyAssignmentEvent(context.Background(), s, events.AssignmentEvent{
+		Type: events.AssignmentAssigned, Market: "KRW-BTC", EngineInstanceID: "engine_1", At: "2026-08-07T00:00:00.000Z",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.assigned) != 1 || s.assigned[0].Market != "KRW-BTC" || s.assigned[0].EngineInstanceID != "engine_1" {
+		t.Errorf("got = %+v", s.assigned)
+	}
+}
+
+func TestApplyAssignmentEventReleased(t *testing.T) {
+	s := &fakeStore{}
+	err := ApplyAssignmentEvent(context.Background(), s, events.AssignmentEvent{
+		Type: events.AssignmentReleased, Market: "KRW-BTC", EngineInstanceID: "engine_1", At: "2026-08-07T00:01:00.000Z",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.released) != 1 || s.released[0].Market != "KRW-BTC" {
+		t.Errorf("got = %+v", s.released)
 	}
 }
 

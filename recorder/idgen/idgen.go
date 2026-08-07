@@ -21,3 +21,12 @@ func NewExecutionID() string {
 	}
 	return "exec_" + hex.EncodeToString(buf)
 }
+
+// NewAssignmentID는 같은 이유로 matching_engine_assignment의 assignment_id를 만듭니다.
+func NewAssignmentID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("assign_%d", time.Now().UnixNano())
+	}
+	return "assign_" + hex.EncodeToString(buf)
+}

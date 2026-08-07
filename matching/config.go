@@ -9,10 +9,11 @@ import (
 
 // Config는 매칭 엔진 실행에 필요한 환경변수를 담습니다.
 type Config struct {
-	KafkaBroker    string
-	OrdersTopic    string
-	ExecutionsTopic string
-	RedisAddr      string
+	KafkaBroker      string
+	OrdersTopic      string
+	ExecutionsTopic  string
+	AssignmentsTopic string
+	RedisAddr        string
 }
 
 // LoadConfig는 로컬의 .env 파일(있으면)을 읽어들인 뒤, 환경변수 기반 설정을 반환합니다.
@@ -46,10 +47,16 @@ func LoadConfig() Config {
 		executionsTopic = "executions"
 	}
 
+	assignmentsTopic := os.Getenv("ASSIGNMENTS_TOPIC")
+	if assignmentsTopic == "" {
+		assignmentsTopic = "assignments"
+	}
+
 	return Config{
-		KafkaBroker:     broker,
-		OrdersTopic:     ordersTopic,
-		ExecutionsTopic: executionsTopic,
-		RedisAddr:       redisAddr,
+		KafkaBroker:      broker,
+		OrdersTopic:      ordersTopic,
+		ExecutionsTopic:  executionsTopic,
+		AssignmentsTopic: assignmentsTopic,
+		RedisAddr:        redisAddr,
 	}
 }

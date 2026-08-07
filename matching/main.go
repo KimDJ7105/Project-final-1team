@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"sync"
@@ -42,15 +44,23 @@ type marketRegistry struct {
 	store            engine.SnapshotStore
 	snapshotEvery    int
 	snapshotInterval time.Duration
+
+	// assignments/instanceID는 FR-11 배정/반납을 감사 목적으로 기록하기 위한
+	// 것뿐입니다 — 매칭 엔진 자신의 정합성은 이미 store(Redis 스냅샷+Handoff)가
+	// 보장하므로, 이 발행이 실패해도 Acquire/Release 자체를 막지 않습니다.
+	assignments *kafkaclient.AssignmentProducer
+	instanceID  string
 }
 
-func newMarketRegistry(producer engine.ExecutionPublisher, store engine.SnapshotStore) *marketRegistry {
+func newMarketRegistry(producer engine.ExecutionPublisher, store engine.SnapshotStore, assignments *kafkaclient.AssignmentProducer, instanceID string) *marketRegistry {
 	return &marketRegistry{
 		engines:          make(map[string]*engine.Engine),
 		producer:         producer,
 		store:            store,
 		snapshotEvery:    snapshotEveryEvents,
 		snapshotInterval: snapshotInterval,
+		assignments:      assignments,
+		instanceID:       instanceID,
 	}
 }
 
@@ -64,6 +74,10 @@ func (r *marketRegistry) Acquire(ctx context.Context, market string) (int64, err
 	r.mu.Lock()
 	r.engines[market] = e
 	r.mu.Unlock()
+
+	if err := r.assignments.PublishAssigned(ctx, market, r.instanceID); err != nil {
+		log.Printf("배정 기록 이벤트 발행 실패 (market=%s): %v", market, err)
+	}
 	return resumeFrom, nil
 }
 
@@ -85,7 +99,25 @@ func (r *marketRegistry) Release(ctx context.Context, market string) error {
 	if !ok {
 		return nil
 	}
-	return e.Handoff(ctx)
+	if err := e.Handoff(ctx); err != nil {
+		return err
+	}
+	if err := r.assignments.PublishReleased(ctx, market, r.instanceID); err != nil {
+		log.Printf("반납 기록 이벤트 발행 실패 (market=%s): %v", market, err)
+	}
+	return nil
+}
+
+// newInstanceID는 이 매칭 엔진 프로세스를 식별할 값을 만듭니다 — assignments
+// 이벤트에 "누가 이 마켓을 맡았는지"를 남기는 용도뿐이라, orderapi/session의
+// newSessionID와 같은 crypto/rand 기반이면 충분합니다(순번 카운터가 아닌 이유도
+// 같음 — 여러 인스턴스가 동시에 존재).
+func newInstanceID() string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("engine_%d", time.Now().UnixNano())
+	}
+	return "engine_" + hex.EncodeToString(buf)
 }
 
 func main() {
@@ -95,12 +127,15 @@ func main() {
 	store := snapshotstore.NewRedisStore(cfg.RedisAddr)
 	producer := kafkaclient.NewExecutionProducer(cfg.KafkaBroker, cfg.ExecutionsTopic)
 	defer producer.Close()
+	assignments := kafkaclient.NewAssignmentProducer(cfg.KafkaBroker, cfg.AssignmentsTopic)
+	defer assignments.Close()
+	instanceID := newInstanceID()
 
 	redisClient := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 	tracker := rebalance.NewLoadTracker(redisClient, cfg.KafkaBroker, cfg.OrdersTopic, TargetMarkets)
 	balancer := rebalance.NewLoadAwareBalancer(tracker, TargetMarkets)
 
-	registry := newMarketRegistry(producer, store)
+	registry := newMarketRegistry(producer, store, assignments, instanceID)
 
 	consumer, err := kafkaclient.NewGroupConsumer(cfg.KafkaBroker, consumerGroupID, cfg.OrdersTopic, balancer, TargetMarkets, registry)
 	if err != nil {
@@ -108,8 +143,8 @@ func main() {
 	}
 	defer consumer.Close()
 
-	log.Printf("매칭 엔진 시작 (Kafka broker=%s, orders=%s, executions=%s, redis=%s, 마켓 %d개, group=%s)",
-		cfg.KafkaBroker, cfg.OrdersTopic, cfg.ExecutionsTopic, cfg.RedisAddr, len(TargetMarkets), consumerGroupID)
+	log.Printf("매칭 엔진 시작 (instanceId=%s, Kafka broker=%s, orders=%s, executions=%s, assignments=%s, redis=%s, 마켓 %d개, group=%s)",
+		instanceID, cfg.KafkaBroker, cfg.OrdersTopic, cfg.ExecutionsTopic, cfg.AssignmentsTopic, cfg.RedisAddr, len(TargetMarkets), consumerGroupID)
 
 	if err := consumer.Run(ctx); err != nil {
 		log.Fatalf("매칭 엔진 종료: %v", err)

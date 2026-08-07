@@ -56,6 +56,20 @@ func ApplyExecutionEvent(ctx context.Context, s Store, ev events.ExecutionEvent)
 	return nil
 }
 
+// ApplyAssignmentEvent는 assignments 토픽에서 디코딩된 이벤트 하나를 Store에
+// 반영합니다(FR-11).
+func ApplyAssignmentEvent(ctx context.Context, s Store, ev events.AssignmentEvent) error {
+	in := AssignmentInput{Market: ev.Market, EngineInstanceID: ev.EngineInstanceID, At: ev.At}
+	switch ev.Type {
+	case events.AssignmentAssigned:
+		return s.AssignMarket(ctx, in)
+	case events.AssignmentReleased:
+		return s.ReleaseMarket(ctx, in)
+	default:
+		return fmt.Errorf("알 수 없는 이벤트 타입: %q", ev.Type)
+	}
+}
+
 // ResolveMode는 매수/매도 양쪽 trade_order.mode로부터 execution.mode를
 // 결정합니다. 둘 다 있고 다르면 매수측이 이기고 mismatched=true를 반환합니다 —
 // orderapi/session의 "동시 실행 방지" 덕분에 이 시스템 전체에서 PAPER_TRADING과

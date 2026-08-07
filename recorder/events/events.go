@@ -28,6 +28,15 @@ type executionMessage struct {
 	Quantity    string `json:"quantity"`
 }
 
+// assignmentMessage는 matching/kafkaclient/assignment_producer.go의 메시지 모양과
+// 독립적으로 다시 선언한 것입니다(모듈 간 타입 비공유 원칙).
+type assignmentMessage struct {
+	Type             string `json:"type"` // "ASSIGNED" | "RELEASED"
+	Market           string `json:"market"`
+	EngineInstanceID string `json:"engineInstanceId"`
+	At               string `json:"at"`
+}
+
 // EventType은 orders 토픽 메시지의 종류입니다.
 type EventType string
 
@@ -59,4 +68,20 @@ type ExecutionEvent struct {
 	SellOrderID string
 	Price       string
 	Quantity    string
+}
+
+// AssignmentType은 assignments 토픽 메시지의 종류입니다.
+type AssignmentType string
+
+const (
+	AssignmentAssigned AssignmentType = "ASSIGNED"
+	AssignmentReleased AssignmentType = "RELEASED"
+)
+
+// AssignmentEvent는 assignments 토픽 메시지 하나를 디코딩한 것입니다(FR-11).
+type AssignmentEvent struct {
+	Type             AssignmentType
+	Market           string
+	EngineInstanceID string
+	At               string
 }
